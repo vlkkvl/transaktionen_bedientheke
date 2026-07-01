@@ -16,7 +16,14 @@ def main():
     try:
         files = sorted(RAW_DIR.glob("*.csv.gz"))
         for i, path in enumerate(files, 1):
-            df = pd.read_csv(path, compression="gzip", low_memory=False, escapechar="\\")
+            df = pd.read_csv(
+                path,
+                compression="gzip",
+                sep=";",
+                low_memory=False,
+                escapechar="\\",
+                dtype={"DEZENTRALE_MARKTAKTIONS_NR": "string"},
+            )
             df["YEAR"] = pd.to_datetime(df["DATE"]).dt.year
             for year, group in df.groupby("YEAR"):
                 group = group.drop(columns=["YEAR"])

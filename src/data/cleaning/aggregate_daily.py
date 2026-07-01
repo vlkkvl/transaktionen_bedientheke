@@ -4,14 +4,15 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[3]
-IN_DIR = ROOT / "data" / "interim" / "transactions_per_year"
+IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_no_dups"
 OUT_DIR = ROOT / "data" / "processed" / "transactions_daily_agg"
 
 KEYS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
 SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE", "UMS_VK_WERT"]
+# snap residues below this threshold to 0 so qty>0 stays a reliable demand-event signal
+QTY_EPS = 1e-3
 FLAG_COLS = ["AKTION_KENNZEICHEN", "RABATT", "ARTIKELRABATT"]
 FIRST_COLS = [
-    "EAN_ID",
     "ARTIKEL_BEZ",
     "ARTIKEL_INHALT",
     "VERKAUFSEINHEIT",
@@ -37,6 +38,7 @@ def main():
                 **{c: "first" for c in FIRST_COLS},
             }
         )
+        agg.loc[agg["ABVERKAUFTE_MENGE"].abs() < QTY_EPS, "ABVERKAUFTE_MENGE"] = 0.0
         out = OUT_DIR / src.name
         agg.to_parquet(out, index=False)
         print(f"{src.name}: {len(df):,} rows -> {len(agg):,} groups")

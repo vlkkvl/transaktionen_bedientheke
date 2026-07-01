@@ -24,14 +24,13 @@ def find_project_root() -> Path:
 
 
 ROOT = find_project_root()
-IN_DIR = ROOT / "data" / "processed" / "transactions_daily_agg"
+IN_DIR = ROOT / "data" / "processed" / "transactions_daily_agg_no_outliers"
 OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
 SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE", "UMS_VK_WERT"]
 FLAG_COLS = ["AKTION_KENNZEICHEN", "RABATT", "ARTIKELRABATT"]
 STATIC_COLS = [
-    "EAN_ID",
     "ARTIKEL_BEZ",
     "ARTIKEL_INHALT",
     "VERKAUFSEINHEIT",
