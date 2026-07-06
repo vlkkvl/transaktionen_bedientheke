@@ -10,20 +10,17 @@ Output ``DATE`` is the Monday week-start date.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from time import perf_counter
 
 import duckdb
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-def find_project_root() -> Path:
-    """Find the repository root from this nested script location."""
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "src").is_dir() and (parent / "data").is_dir():
-            return parent
-    return Path(__file__).resolve().parents[3]
+from src.data.common import ROOT, sql_literal, step
 
 
-ROOT = find_project_root()
 IN_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days"
 OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_weeks"
 
@@ -44,18 +41,6 @@ STATIC_COLS = [
 OUTPUT_COLS = KEY_COLS + SUM_COLS + FLAG_COLS + STATIC_COLS
 
 PERIOD_START_SQL = "date_trunc('week', DATE_D)::DATE"
-
-
-def sql_literal(value: str | Path) -> str:
-    """Escape a value for use as a single-quoted DuckDB SQL literal."""
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def step(message: str, t0: float) -> float:
-    """Print an elapsed-time message and return the current timestamp."""
-    t1 = perf_counter()
-    print(f"{message} ({t1 - t0:.1f}s)")
-    return t1
 
 
 def validate_input_schema(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:

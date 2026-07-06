@@ -8,23 +8,20 @@ sales and zero flags.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from time import perf_counter
 
 import duckdb
 import pandas as pd
 import holidays
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-def find_project_root() -> Path:
-    """Find the repository root from this nested script location."""
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "src").is_dir() and (parent / "data").is_dir():
-            return parent
-    return Path(__file__).resolve().parents[3]
+from src.data.common import ROOT, sql_literal, step
 
 
-ROOT = find_project_root()
-IN_DIR = ROOT / "data" / "processed" / "transactions_daily_agg_no_outliers"
+IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_no_outliers"
 OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
@@ -46,11 +43,6 @@ OUTPUT_COLS = KEY_COLS + SUM_COLS + FLAG_COLS + STATIC_COLS
 SUNDAY_OPEN_MARKT_IDS = (1100084, 1100079)
 HOLIDAY_COUNTRY = "DE"
 HOLIDAY_SUBDIVISION = "NI"  # Niedersachsen
-
-
-def sql_literal(value: str | Path) -> str:
-    """Escape a value for use as a single-quoted DuckDB SQL literal."""
-    return "'" + str(value).replace("'", "''") + "'"
 
 
 def create_germany_ni_holidays(years: range):
@@ -76,13 +68,6 @@ def build_calendar(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataF
     calendar["YEAR"] = calendar["DATE_D"].dt.year
     calendar["DATE_D"] = calendar["DATE_D"].dt.date
     return calendar
-
-
-def step(message: str, t0: float) -> float:
-    """Print an elapsed-time message and return the current timestamp."""
-    t1 = perf_counter()
-    print(f"{message} ({t1 - t0:.1f}s)")
-    return t1
 
 
 def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:

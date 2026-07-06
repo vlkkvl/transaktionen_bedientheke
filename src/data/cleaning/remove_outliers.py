@@ -1,43 +1,57 @@
 """Remove ABVERKAUFTE_MENGE outliers per (ARTIKEL_ID, MARKT_ID) series.
 
 For each demand series, compute Q1, Q3, IQR on ABVERKAUFTE_MENGE and drop rows
-above Q3 + IQR_K * IQR (default k=3, "extreme outlier" rule). Per-series bounds
-are used because products are sold in different units (kg vs piece) and series
-magnitudes differ by orders of magnitude.
+above Q3 + IQR_K * IQR.
 
-Input:  data/processed/transactions_daily_agg/*.parquet
-Output: data/processed/transactions_daily_agg_no_outliers/*.parquet
+Input:  data/interim/transactions_daily_agg/*.parquet
+Output: data/interim/transactions_daily_agg_no_outliers/*.parquet
 """
+from __future__ import annotations
+
 from pathlib import Path
+import sys
 
-import duckdb
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-ROOT = Path(__file__).resolve().parents[3]
-IN_DIR = ROOT / "data" / "processed" / "transactions_daily_agg"
-OUT_DIR = ROOT / "data" / "processed" / "transactions_daily_agg_no_outliers"
+from src.data.common import (
+    ROOT,
+    clear_parquet_outputs,
+    configure_duckdb,
+    ident,
+    read_parquet_expr,
+    require_parquet_files,
+    sql_literal,
+)
+
+IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg"
+OUT_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_no_outliers"
 
 DEMAND_COL = "ABVERKAUFTE_MENGE"
 GROUP_COLS = ["ARTIKEL_ID", "MARKT_ID"]
 IQR_K = 3.0
 
 
-def main():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    group_sql = ", ".join(GROUP_COLS)
-    in_glob = str(IN_DIR / "*.parquet")
+def temp_output_path(path: Path) -> Path:
+    return path.with_name(f".{path.stem}.no_outliers.tmp{path.suffix}")
 
-    con = duckdb.connect()
-    con.execute("PRAGMA threads=8")
 
+def main() -> None:
+    input_files = require_parquet_files(IN_DIR)
+    clear_parquet_outputs(OUT_DIR)
+    group_sql = ", ".join(ident(col) for col in GROUP_COLS)
+    in_glob = IN_DIR / "transactions_year_*.parquet"
+
+    con = configure_duckdb()
     con.execute(
         f"""
-        CREATE TEMP TABLE bounds AS
+        CREATE OR REPLACE TEMP TABLE bounds AS
         WITH q AS (
             SELECT
                 {group_sql},
-                quantile_cont({DEMAND_COL}, 0.25) AS q1,
-                quantile_cont({DEMAND_COL}, 0.75) AS q3
-            FROM read_parquet('{in_glob}')
+                quantile_cont({ident(DEMAND_COL)}, 0.25) AS q1,
+                quantile_cont({ident(DEMAND_COL)}, 0.75) AS q3
+            FROM {read_parquet_expr(in_glob)}
             GROUP BY {group_sql}
         )
         SELECT {group_sql}, q1, q3, q3 + {IQR_K} * (q3 - q1) AS upper
@@ -45,32 +59,35 @@ def main():
         """
     )
 
-    in_files = sorted(IN_DIR.glob("*.parquet"))
     n_in_total = 0
     n_out_total = 0
-    for path in in_files:
+    for path in input_files:
         out_path = OUT_DIR / path.name
+        tmp_path = temp_output_path(out_path)
+        if tmp_path.exists():
+            tmp_path.unlink()
+
         n_in = con.execute(
-            f"SELECT COUNT(*) FROM read_parquet('{path}')"
+            f"SELECT COUNT(*) FROM {read_parquet_expr(path)}"
         ).fetchone()[0]
         con.execute(
             f"""
             COPY (
                 SELECT t.*
-                FROM read_parquet('{path}') t
+                FROM {read_parquet_expr(path)} t
                 JOIN bounds b USING ({group_sql})
-                WHERE t.{DEMAND_COL} <= b.upper
-            ) TO '{out_path}' (FORMAT PARQUET)
+                WHERE t.{ident(DEMAND_COL)} <= b.upper
+            ) TO {sql_literal(tmp_path)} (FORMAT PARQUET)
             """
         )
         n_out = con.execute(
-            f"SELECT COUNT(*) FROM read_parquet('{out_path}')"
+            f"SELECT COUNT(*) FROM {read_parquet_expr(tmp_path)}"
         ).fetchone()[0]
+        tmp_path.replace(out_path)
+
         n_in_total += n_in
         n_out_total += n_out
-        print(
-            f"{path.name}: in={n_in:,} out={n_out:,} removed={n_in - n_out:,}"
-        )
+        print(f"{path.name}: in={n_in:,} out={n_out:,} removed={n_in - n_out:,}")
 
     removed = n_in_total - n_out_total
     pct = removed / n_in_total * 100 if n_in_total else 0.0
@@ -78,6 +95,7 @@ def main():
         f"\nTotal: in={n_in_total:,} out={n_out_total:,} "
         f"removed={removed:,} ({pct:.4f}%)"
     )
+    print(f"Output dir: {OUT_DIR}")
 
 
 if __name__ == "__main__":

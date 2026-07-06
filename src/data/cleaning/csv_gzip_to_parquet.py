@@ -1,20 +1,28 @@
 """Convert CSV.gz files in data/raw/transactions_5_years to per-year parquet files."""
 from pathlib import Path
+import sys
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = Path(__file__).resolve().parents[3]
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from src.data.common import ROOT, clear_parquet_outputs
+
 RAW_DIR = ROOT / "data" / "raw" / "transactions_5_years"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 
 
 def main():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted(RAW_DIR.glob("*.csv.gz"))
+    if not files:
+        raise FileNotFoundError(f"No CSV gzip files found in {RAW_DIR}")
+
+    clear_parquet_outputs(OUT_DIR)
     writers: dict[int, pq.ParquetWriter] = {}
     try:
-        files = sorted(RAW_DIR.glob("*.csv.gz"))
         for i, path in enumerate(files, 1):
             df = pd.read_csv(
                 path,
