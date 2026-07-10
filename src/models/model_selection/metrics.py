@@ -20,32 +20,32 @@ from src.models.model_selection.config import DEFAULT_GROUP_COLS
 PER_SERIES_COLUMNS = (
     "demand_class",
     "model",
-    "n_windows",
-    "abs_error_sum",
-    "actual_sum",
-    "forecast_sum",
+    "n_windows",  # Number of rolling forecast windows for this series/model.
+    "abs_error_sum",  # Total absolute forecast error over all forecasted periods.
+    "actual_sum",  # Total absolute actual demand over all forecasted periods.
+    "forecast_sum",  # Total forecasted demand over all forecasted periods.
     "mae",
     "rmse",
     "bias",
     "wape",
-    "forecast_to_actual_ratio",
+    "forecast_to_actual_ratio",  # Forecasted volume divided by actual volume.
 )
 
 PER_CLUSTER_COLUMNS = (
     "demand_class",
     "model",
-    "n_series",
-    "n_windows",
+    "n_series",  # Number of product-store series evaluated in the cluster.
+    "n_windows",  # Total rolling forecast windows across all series.
     "mae_mean",
     "mae_median",
     "rmse_mean",
-    "bias_mean",
-    "wape_median",
-    "wape_pooled",
-    "abs_error_sum",
-    "actual_sum",
-    "forecast_sum",
-    "forecast_to_actual_ratio",
+    "bias_mean",  # Average per-series direction of forecast bias.
+    "wape_median",  # Median per-series WAPE; typical relative error.
+    "wape_pooled",  # Cluster-level WAPE from pooled total errors and actuals.
+    "abs_error_sum",  # Total absolute error across the whole cluster.
+    "actual_sum",  # Total absolute actual demand across the whole cluster.
+    "forecast_sum",  # Total forecasted demand across the whole cluster.
+    "forecast_to_actual_ratio",  # Cluster forecast volume divided by actual volume.
 )
 
 
@@ -76,12 +76,12 @@ def per_series_metrics(
     grouped = enriched.groupby(
         [*group_cols, "demand_class", "model"], observed=True, sort=False
     ).agg(
-        n_windows=("actual", "size"),
+        n_windows=("window_index", "nunique"),
         abs_error_sum=("abs_error", "sum"),
         actual_sum=("abs_actual", "sum"),
         forecast_sum=("forecast", "sum"),
         mae=("abs_error", "mean"),
-        mse=("squared_error", "mean"),
+        mse=("squared_error", "mean"),  # Intermediate value for RMSE.
         bias=("signed_error", "mean"),
     ).reset_index()
 

@@ -1,4 +1,4 @@
-"""Load weekly demand series and compute ADI/CV2 demand classes from parquet."""
+"""Load demand series and compute ADI/CV2 demand classes from parquet."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,10 +10,10 @@ from src.models.baseline.registry import DEMAND_CLASSES, add_demand_class
 from src.models.model_selection.config import (
     DEFAULT_DATA_DIR,
     DEFAULT_DEMAND_COL,
+    DEFAULT_FORECAST_PERIODS,
     DEFAULT_GROUP_COLS,
-    DEFAULT_MIN_DEMAND_WEEKS,
+    DEFAULT_MIN_DEMAND_PERIODS,
     DEFAULT_MIN_TRAIN_SIZE,
-    HORIZON_WEEKS,
 )
 
 
@@ -40,9 +40,9 @@ def compute_series_metrics(
     data_dir: Path = DEFAULT_DATA_DIR,
     demand_col: str = DEFAULT_DEMAND_COL,
     group_cols: tuple[str, ...] = DEFAULT_GROUP_COLS,
-    min_demand_weeks: int = DEFAULT_MIN_DEMAND_WEEKS,
+    min_demand_periods: int = DEFAULT_MIN_DEMAND_PERIODS,
 ) -> pd.DataFrame:
-    """Compute ADI/CV2 and demand class for every weekly series."""
+    """Compute ADI/CV2 and demand class for every period series."""
     group_sql = ", ".join(quote_identifier(col) for col in group_cols)
     demand_sql = quote_identifier(demand_col)
     date_sql = quote_identifier("DATE")
@@ -59,48 +59,50 @@ def compute_series_metrics(
     ), series AS (
         SELECT
             {group_sql},
-            COUNT(*) AS active_weeks,
-            SUM(CASE WHEN demand > 0 THEN 1 ELSE 0 END) AS demand_weeks,
+            COUNT(*) AS active_periods,
+            SUM(CASE WHEN demand > 0 THEN 1 ELSE 0 END) AS demand_periods,
             SUM(demand) AS series_total_demand,
             AVG(CASE WHEN demand > 0 THEN demand END) AS mean_nonzero_demand,
             VAR_SAMP(CASE WHEN demand > 0 THEN demand END) AS var_nonzero_demand,
-            MIN(period_start) AS first_active_week,
-            MAX(period_start) AS last_active_week
+            MIN(period_start) AS first_active_period,
+            MAX(period_start) AS last_active_period
         FROM period_data
         GROUP BY {group_sql}
     )
     SELECT
         *,
-        active_weeks / NULLIF(demand_weeks, 0) AS ADI,
+        active_periods / NULLIF(demand_periods, 0) AS ADI,
         CASE
-            WHEN demand_weeks > 1 AND mean_nonzero_demand > 0
+            WHEN demand_periods > 1 AND mean_nonzero_demand > 0
                 THEN var_nonzero_demand
                     / (mean_nonzero_demand * mean_nonzero_demand)
-            WHEN demand_weeks = 1 THEN 0.0
+            WHEN demand_periods = 1 THEN 0.0
             ELSE NULL
         END AS CV2
     FROM series
-    WHERE demand_weeks > 0
+    WHERE demand_periods > 0
     """
 
     con = _new_connection()
     metrics = con.execute(query, [glob]).fetchdf()
     metrics = add_demand_class(metrics)
-    return metrics[metrics["demand_weeks"] >= min_demand_weeks].reset_index(drop=True)
+    return metrics[metrics["demand_periods"] >= min_demand_periods].reset_index(
+        drop=True
+    )
 
 
 def select_evaluation_keys(
     series_metrics: pd.DataFrame,
     group_cols: tuple[str, ...] = DEFAULT_GROUP_COLS,
     min_train_size: int = DEFAULT_MIN_TRAIN_SIZE,
+    forecast_periods: int = DEFAULT_FORECAST_PERIODS,
     max_series_per_class: int | None = None,
-    random_state: int = 42,
 ) -> pd.DataFrame:
-    """Pick series long enough for at least one sliding-window forecast."""
-    min_periods = min_train_size + HORIZON_WEEKS
+    """Pick recent series long enough for at least one sliding-window forecast."""
+    min_periods = min_train_size + forecast_periods
     eligible = series_metrics[
         series_metrics["demand_class"].isin(DEMAND_CLASSES)
-        & (series_metrics["active_weeks"] >= min_periods)
+        & (series_metrics["active_periods"] >= min_periods)
     ].copy()
 
     if max_series_per_class is None:
@@ -112,24 +114,31 @@ def select_evaluation_keys(
     if eligible.empty:
         return eligible.reset_index(drop=True)
 
-    sampled_parts = [
-        class_df.sample(
-            n=min(max_series_per_class, len(class_df)),
-            random_state=random_state,
-        )
-        for _, class_df in eligible.groupby("demand_class", sort=False)
+    sort_cols = [
+        "demand_class",
+        "last_active_period",
+        "demand_periods",
+        "active_periods",
+        "series_total_demand",
+        *group_cols,
     ]
-    sampled = pd.concat(sampled_parts, ignore_index=True)
-    return sampled.sort_values(["demand_class", *group_cols]).reset_index(drop=True)
+    ascending = [True, False, False, False, False, *([True] * len(group_cols))]
+    ranked = eligible.sort_values(sort_cols, ascending=ascending)
+    top_parts = [
+        class_df.head(max_series_per_class)
+        for _, class_df in ranked.groupby("demand_class", sort=False)
+    ]
+    selected = pd.concat(top_parts, ignore_index=True)
+    return selected.sort_values(["demand_class", *group_cols]).reset_index(drop=True)
 
 
-def load_weekly_series(
+def load_period_series(
     data_dir: Path,
     selected_keys: pd.DataFrame,
     group_cols: tuple[str, ...] = DEFAULT_GROUP_COLS,
     demand_col: str = DEFAULT_DEMAND_COL,
 ) -> pd.DataFrame:
-    """Load weekly demand rows for the selected product-store series."""
+    """Load demand rows for the selected product-store series."""
     if selected_keys.empty:
         return pd.DataFrame(
             columns=[*group_cols, "period_start", "demand", "demand_class"]
@@ -168,3 +177,6 @@ def load_weekly_series(
     ORDER BY {p_group_sql}, p.period_start
     """
     return con.execute(query, [glob]).fetchdf()
+
+
+load_weekly_series = load_period_series
