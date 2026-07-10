@@ -14,6 +14,7 @@ from src.data.common import ROOT
 from src.data.cleaning import (
     aggregate_daily,
     check_duplicates,
+    define_goal_variable,
     filtering,
     remove_outliers,
 )
@@ -120,6 +121,7 @@ def main() -> None:
             "Raw files to yearly parquet",
             make_raw_conversion_stage(args.force_csv_conversion),
         ),
+        ("Define ABVERKAUFTE_MENGE goal variable", define_goal_variable.main),
         ("Apply article filter report", filtering.main),
         ("Export duplicate diagnostics", check_duplicates.main),
         ("Aggregate daily transactions (filtered + deduplicated)", aggregate_daily.main),
