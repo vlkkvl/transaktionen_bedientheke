@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from src.data.common import ROOT, clear_parquet_outputs
 
@@ -15,7 +15,7 @@ RAW_DIR = ROOT / "data" / "raw" / "transactions_5_years"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 
 
-def main():
+def main() -> None:
     files = sorted(RAW_DIR.glob("*.csv.gz"))
     if not files:
         raise FileNotFoundError(f"No CSV gzip files found in {RAW_DIR}")

@@ -14,21 +14,60 @@ from src.data.common import ROOT
 from src.data.cleaning import (
     aggregate_daily,
     check_duplicates,
-    csv_gzip_to_parquet,
     filtering,
     remove_outliers,
 )
+from src.data.cleaning.convert import csv_gzip_to_parquet, csv_to_parquet
 from src.data.preparation import (
     distribute_sales_over_active_days,
     distribute_sales_over_active_months,
     distribute_sales_over_active_weeks,
 )
 
+RAW_TRANSACTIONS_DIR = ROOT / "data" / "raw" / "transactions_5_years"
 YEARLY_PARQUET_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 
 
 def has_yearly_parquet() -> bool:
     return any(YEARLY_PARQUET_DIR.glob("transactions_year_*.parquet"))
+
+
+def raw_files_by_type() -> dict[str, list[Path]]:
+    return {
+        "csv": sorted(RAW_TRANSACTIONS_DIR.glob("*.csv")),
+        "csv.gz": sorted(RAW_TRANSACTIONS_DIR.glob("*.csv.gz")),
+        "parquet": sorted(RAW_TRANSACTIONS_DIR.glob("*.parquet")),
+    }
+
+
+def select_raw_converter() -> tuple[str, Callable[[], None]]:
+    available = {
+        file_type: files
+        for file_type, files in raw_files_by_type().items()
+        if files
+    }
+    if not available:
+        raise FileNotFoundError(
+            f"No raw transaction files found in {RAW_TRANSACTIONS_DIR}"
+        )
+    if len(available) > 1:
+        counts = ", ".join(
+            f"{file_type}={len(files)}" for file_type, files in available.items()
+        )
+        raise ValueError(
+            f"Mixed raw transaction file types in {RAW_TRANSACTIONS_DIR}: {counts}"
+        )
+
+    file_type = next(iter(available))
+    if file_type == "csv":
+        return "CSV to yearly parquet", csv_to_parquet.main
+    if file_type == "csv.gz":
+        return "CSV gzip to yearly parquet", csv_gzip_to_parquet.main
+
+    raise ValueError(
+        "Raw parquet files are already parquet. Place yearly parquet files in "
+        f"{YEARLY_PARQUET_DIR} or add a parquet passthrough converter."
+    )
 
 
 def progress_header(index: int, total: int, title: str) -> None:
@@ -47,14 +86,19 @@ def run_stage(index: int, total: int, title: str, fn: Callable[[], None]) -> Non
     print(f"Finished {title} in {perf_counter() - started_at:.1f}s")
 
 
-def make_csv_stage(force: bool) -> Callable[[], None]:
+def make_raw_conversion_stage(force: bool) -> Callable[[], None]:
     def stage() -> None:
-        if force or not has_yearly_parquet():
-            csv_gzip_to_parquet.main()
+        if not force and has_yearly_parquet():
+            print(
+                "Skipping raw conversion; found yearly parquet files in "
+                f"{YEARLY_PARQUET_DIR}"
+            )
+            print("Use --force-csv-conversion to rebuild them from raw files.")
             return
 
-        print(f"Skipping CSV conversion; found yearly parquet files in {YEARLY_PARQUET_DIR}")
-        print("Use --force-csv-conversion to rebuild them from raw CSV gzip files.")
+        title, converter = select_raw_converter()
+        print(f"Using converter: {title}")
+        converter()
 
     return stage
 
@@ -64,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-csv-conversion",
         action="store_true",
-        help="Rebuild data/interim/transactions_per_year from raw CSV gzip files.",
+        help="Rebuild data/interim/transactions_per_year from raw transaction files.",
     )
     return parser.parse_args()
 
@@ -72,7 +116,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     stages: list[tuple[str, Callable[[], None]]] = [
-        ("CSV gzip to yearly parquet", make_csv_stage(args.force_csv_conversion)),
+        (
+            "Raw files to yearly parquet",
+            make_raw_conversion_stage(args.force_csv_conversion),
+        ),
         ("Apply article filter report", filtering.main),
         ("Export duplicate diagnostics", check_duplicates.main),
         ("Aggregate daily transactions (filtered + deduplicated)", aggregate_daily.main),

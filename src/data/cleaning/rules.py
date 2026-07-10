@@ -6,9 +6,116 @@ from pathlib import Path
 from src.data.common import ident, read_parquet_expr
 
 ARTICLE_ID_COL = "ARTIKEL_ID"
-EXCLUDED_ARTICLES = {
-    1103534: "Geflügel Gewichtseingabe",
-    1325959: "Fleisch/Wurst (unklar was verkauft wird, seit 2022 nicht mehr verkauft)",
+MANDANT_ID_COL = "MANDANT_ID"
+
+MANDANT_RULE = True
+FCM_RULE = True
+
+ALLOWED_MANDANT_IDS = {110, 130, 135}
+ALLOWED_FCM_ARTICLE_IDS = {
+    560039,
+    579781,
+    1376569,
+    1376691,
+    1376698,
+    1376854,
+    1376855,
+    1376860,
+    1376862,
+    1376875,
+    1376880,
+    1376881,
+    1377267,
+    1379003,
+    1379020,
+    1382746,
+    1382748,
+    1382752,
+    1382760,
+    1382761,
+    1382762,
+    1382763,
+    1382764,
+    1382765,
+    1382766,
+    1382767,
+    1382768,
+    1382770,
+    1382771,
+    1382774,
+    1382777,
+    1382780,
+    1382782,
+    1382788,
+    1382858,
+    1382862,
+    1382863,
+    1389566,
+    1389568,
+    1389569,
+    1394487,
+    1394488,
+    1394489,
+    1394490,
+    1396337,
+    1399512,
+    1401346,
+    1401486,
+    1401487,
+    1401488,
+    1401489,
+    1401490,
+    1402017,
+    1402822,
+    1402844,
+    1403340,
+    1405612,
+    1406063,
+    1406252,
+    1406310,
+    1406315,
+    1406317,
+    1406587,
+    1406590,
+    1406593,
+    1406595,
+    1406603,
+    1406792,
+    1406794,
+    1406796,
+    1407213,
+    1407289,
+    1407292,
+    1407293,
+    1407295,
+    1407886,
+    1408116,
+    1409377,
+    1411185,
+    1411695,
+    1412026,
+    1413118,
+    1413120,
+    1413121,
+    1413122,
+    1413150,
+    1413151,
+    1413521,
+    1414244,
+    1416733,
+    1422555,
+    1422634,
+    1425414,
+    1425927,
+    1426349,
+    1426594,
+    1428223,
+    1430131,
+    1433364,
+    1433365,
+    1433578,
+    1433967,
+    1434898,
 }
 
 DUPLICATE_KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "BON_ID", "DATE", "TIME", "UMS_MENGE"]
@@ -25,15 +132,40 @@ BINARY_FLAG_COLUMNS = {
 }
 
 
-def excluded_ids_sql() -> str:
-    return ", ".join(str(article_id) for article_id in sorted(EXCLUDED_ARTICLES))
+def allowed_mandant_ids_sql() -> str:
+    return ", ".join(str(mandant_id) for mandant_id in sorted(ALLOWED_MANDANT_IDS))
 
 
-def article_filter_condition(alias: str | None = None) -> str:
+def allowed_fcm_article_ids_sql() -> str:
+    return ", ".join(str(article_id) for article_id in sorted(ALLOWED_FCM_ARTICLE_IDS))
+
+
+def mandant_filter_condition(alias: str | None = None) -> str:
+    col = ident(MANDANT_ID_COL)
+    if alias:
+        col = f"{alias}.{col}"
+    return f"{col} IN ({allowed_mandant_ids_sql()})"
+
+
+def fcm_filter_condition(alias: str | None = None) -> str:
     col = ident(ARTICLE_ID_COL)
     if alias:
         col = f"{alias}.{col}"
-    return f"{col} IS NULL OR {col} NOT IN ({excluded_ids_sql()})"
+    return f"{col} IN ({allowed_fcm_article_ids_sql()})"
+
+
+def active_rule_flags() -> tuple[bool, bool]:
+    return bool(MANDANT_RULE), bool(FCM_RULE)
+
+
+def transaction_filter_condition(alias: str | None = None) -> str:
+    mandant_rule, fcm_rule = active_rule_flags()
+    conditions = []
+    if mandant_rule:
+        conditions.append(f"({mandant_filter_condition(alias)})")
+    if fcm_rule:
+        conditions.append(f"({fcm_filter_condition(alias)})")
+    return " AND ".join(conditions) if conditions else "TRUE"
 
 
 def duplicate_keys_sql(alias: str | None = None) -> str:
@@ -46,6 +178,6 @@ def filtered_transactions_expr(path: Path | str, *, filename: bool = False) -> s
         (
             SELECT *
             FROM {read_parquet_expr(path, filename=filename)}
-            WHERE {article_filter_condition()}
+            WHERE {transaction_filter_condition()}
         )
         """
