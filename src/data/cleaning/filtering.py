@@ -20,9 +20,12 @@ from src.data.cleaning.rules import (
     FCM_RULE,
     MANDANT_RULE,
     MANDANT_ID_COL,
+    MIN_UMS_MENGE,
+    UMS_MENGE_COL,
     fcm_filter_condition,
     mandant_filter_condition,
     transaction_filter_condition,
+    ums_menge_filter_condition,
 )
 
 IN_DIR = ROOT / "data" / "interim" / "transactions_per_year"
@@ -45,6 +48,7 @@ def main() -> None:
     print(f"FCM_RULE: {FCM_RULE}")
     if FCM_RULE:
         print(f"Allowed FCM ARTIKEL_ID values: {len(ALLOWED_FCM_ARTICLE_IDS):,}")
+    print(f"{UMS_MENGE_COL} threshold: > {MIN_UMS_MENGE}")
 
     t0 = perf_counter()
     total = con.execute(f"SELECT COUNT(*) FROM {read_expr}").fetchone()[0]
@@ -82,10 +86,15 @@ def main() -> None:
             """
         ).fetchone()
 
+    ums_menge_removed = con.execute(
+        f"SELECT COUNT(*) FROM {read_expr} WHERE NOT ({ums_menge_filter_condition()})"
+    ).fetchone()[0]
+
     print("\nSummary")
     print(f"  rows in:      {total:,}")
     print(f"  rows kept:    {kept:,}")
     print(f"  rows removed: {total - kept:,}")
+    print(f"  removed by {UMS_MENGE_COL} filter: {ums_menge_removed:,}")
     if mandant_removed is None:
         print("  MANDANT_ID filter: disabled")
     else:

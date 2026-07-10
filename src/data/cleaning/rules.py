@@ -7,9 +7,12 @@ from src.data.common import ident, read_parquet_expr
 
 ARTICLE_ID_COL = "ARTIKEL_ID"
 MANDANT_ID_COL = "MANDANT_ID"
+UMS_MENGE_COL = "UMS_MENGE"
 
 MANDANT_RULE = True
 FCM_RULE = True
+
+MIN_UMS_MENGE = 0.005
 
 ALLOWED_MANDANT_IDS = {110, 130, 135}
 ALLOWED_FCM_ARTICLE_IDS = {
@@ -154,18 +157,25 @@ def fcm_filter_condition(alias: str | None = None) -> str:
     return f"{col} IN ({allowed_fcm_article_ids_sql()})"
 
 
+def ums_menge_filter_condition(alias: str | None = None) -> str:
+    col = ident(UMS_MENGE_COL)
+    if alias:
+        col = f"{alias}.{col}"
+    return f"{col} > {MIN_UMS_MENGE}"
+
+
 def active_rule_flags() -> tuple[bool, bool]:
     return bool(MANDANT_RULE), bool(FCM_RULE)
 
 
 def transaction_filter_condition(alias: str | None = None) -> str:
     mandant_rule, fcm_rule = active_rule_flags()
-    conditions = []
+    conditions = [f"({ums_menge_filter_condition(alias)})"]
     if mandant_rule:
         conditions.append(f"({mandant_filter_condition(alias)})")
     if fcm_rule:
         conditions.append(f"({fcm_filter_condition(alias)})")
-    return " AND ".join(conditions) if conditions else "TRUE"
+    return " AND ".join(conditions)
 
 
 def duplicate_keys_sql(alias: str | None = None) -> str:
