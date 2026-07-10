@@ -33,7 +33,7 @@ IN_GLOB = IN_DIR / "transactions_year_*.parquet"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_daily_agg"
 
 KEYS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
-SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE", "UMS_VK_WERT"]
+SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE", "UMS_VK_WERT", "GRAMM_BON"]
 QTY_EPS = 1e-3
 FLAG_COLS = ["AKTION_KENNZEICHEN", "RABATT", "ARTIKELRABATT"]
 FIRST_COLS = [
@@ -148,6 +148,7 @@ def aggregate_select_sql(columns: list[str], read_expr: str) -> str:
                 ELSE SUM(COALESCE({ident("ABVERKAUFTE_MENGE")}, 0.0))::DOUBLE
             END AS {ident("ABVERKAUFTE_MENGE")},
             SUM(COALESCE({ident("UMS_VK_WERT")}, 0.0))::DOUBLE AS {ident("UMS_VK_WERT")},
+            SUM(COALESCE({ident("GRAMM_BON")}, 0.0))::DOUBLE AS {ident("GRAMM_BON")},
             {flag_select},
             {static_select}
         FROM cleaned
