@@ -20,7 +20,7 @@ from src.data.cleaning.rules import (
     filtered_transactions_expr,
 )
 
-IN_DIR = ROOT / "data" / "interim" / "transactions_per_year"
+IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered"
 IN_GLOB = IN_DIR / "transactions_year_*.parquet"
 DUP_OUT_DIR = ROOT / "data" / "interim" / "transactions_duplicates"
 DUP_OUT_FILE = DUP_OUT_DIR / "duplicates_transactions_5_years.csv"

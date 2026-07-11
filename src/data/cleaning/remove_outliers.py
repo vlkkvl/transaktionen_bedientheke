@@ -1,6 +1,6 @@
-"""Remove ABVERKAUFTE_MENGE outliers per (ARTIKEL_ID, MARKT_ID) series.
+"""Remove ABVERKAUFTE_MENGE_KG outliers per (ARTIKEL_ID, MARKT_ID) series.
 
-For each demand series, compute Q1, Q3, IQR on ABVERKAUFTE_MENGE and drop rows
+For each demand series, compute Q1, Q3, IQR on ABVERKAUFTE_MENGE_KG and drop rows
 above Q3 + IQR_K * IQR.
 
 Input:  data/interim/transactions_daily_agg/*.parquet
@@ -27,7 +27,7 @@ from src.data.common import (
 IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_no_outliers"
 
-DEMAND_COL = "ABVERKAUFTE_MENGE"
+DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 GROUP_COLS = ["ARTIKEL_ID", "MARKT_ID"]
 IQR_K = 3.0
 

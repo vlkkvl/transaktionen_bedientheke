@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
 
 DEFAULT_OUTPUT_DIR = ROOT / "reports" / "results"
 DEFAULT_GROUP_COLS: tuple[str, ...] = ("ARTIKEL_ID", "MARKT_ID")
-DEFAULT_DEMAND_COL = "ABVERKAUFTE_MENGE"
+DEFAULT_DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 
 # Choose the aggregation horizon used by model selection.
 # Valid values: "daily", "weekly", "monthly".

@@ -3,16 +3,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.data.common import ident, read_parquet_expr
+from src.data.common import ident, read_parquet_expr, sql_literal
 
 ARTICLE_ID_COL = "ARTIKEL_ID"
 MANDANT_ID_COL = "MANDANT_ID"
 UMS_MENGE_COL = "UMS_MENGE"
+ARTIKEL_INHALT_COL = "ARTIKEL_INHALT"
+GEWICHT_FLAG_COL = "GEWICHT_FLAG"
 
 MANDANT_RULE = True
-FCM_RULE = False
+FCM_RULE = True
+WEIGHT_RULE = True
 
 MIN_UMS_MENGE = 0.005
+WEIGHT_CONTENT_LIKE = "%amm%"
 
 ALLOWED_MANDANT_IDS = {110, 130, 135}
 ALLOWED_FCM_ARTICLE_IDS = {
@@ -124,6 +128,7 @@ ALLOWED_FCM_ARTICLE_IDS = {
 DUPLICATE_KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "BON_ID", "DATE", "TIME", "UMS_MENGE"]
 DROP_COLUMNS = {"EAN_ID"}
 BINARY_FLAG_COLUMNS = {
+    "GEWICHT_FLAG",
     "GEWICHTSARTIKEL",
     "WAAGENARTIKEL",
     "AKTION_KENNZEICHEN",
@@ -164,17 +169,34 @@ def ums_menge_filter_condition(alias: str | None = None) -> str:
     return f"{col} > {MIN_UMS_MENGE}"
 
 
-def active_rule_flags() -> tuple[bool, bool]:
-    return bool(MANDANT_RULE), bool(FCM_RULE)
+def gewicht_flag_expression_sql(alias: str | None = None) -> str:
+    col = ident(ARTIKEL_INHALT_COL)
+    if alias:
+        col = f"{alias}.{col}"
+    content = f"LOWER(COALESCE(CAST({col} AS VARCHAR), ''))"
+    return (
+        f"CASE WHEN {content} LIKE {sql_literal(WEIGHT_CONTENT_LIKE)} "
+        "THEN 1 ELSE 0 END"
+    )
+
+
+def weight_filter_condition(alias: str | None = None) -> str:
+    return f"({gewicht_flag_expression_sql(alias)}) = 1"
+
+
+def active_rule_flags() -> tuple[bool, bool, bool]:
+    return bool(MANDANT_RULE), bool(FCM_RULE), bool(WEIGHT_RULE)
 
 
 def transaction_filter_condition(alias: str | None = None) -> str:
-    mandant_rule, fcm_rule = active_rule_flags()
+    mandant_rule, fcm_rule, weight_rule = active_rule_flags()
     conditions = [f"({ums_menge_filter_condition(alias)})"]
     if mandant_rule:
         conditions.append(f"({mandant_filter_condition(alias)})")
     if fcm_rule:
         conditions.append(f"({fcm_filter_condition(alias)})")
+    if weight_rule:
+        conditions.append(f"({weight_filter_condition(alias)})")
     return " AND ".join(conditions)
 
 

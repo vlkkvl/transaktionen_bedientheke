@@ -25,12 +25,13 @@ IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_no_outliers"
 OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
-SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE", "UMS_VK_WERT"]
+SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE_KG", "UMS_VK_WERT"]
 FLAG_COLS = ["AKTION_KENNZEICHEN", "RABATT", "ARTIKELRABATT"]
 STATIC_COLS = [
     "ARTIKEL_BEZ",
     "ARTIKEL_INHALT",
     "VERKAUFSEINHEIT",
+    "GEWICHT_FLAG",
     "GEWICHTSARTIKEL",
     "MARKT_NR",
     "MANDANT_ID",
@@ -80,7 +81,7 @@ def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
             MARKT_ID,
             CAST(DATE AS DATE) AS DATE_D,
             UMS_MENGE,
-            ABVERKAUFTE_MENGE,
+            ABVERKAUFTE_MENGE_KG,
             UMS_VK_WERT,
             AKTION_KENNZEICHEN,
             RABATT,
@@ -134,7 +135,7 @@ def output_select_sql(year: int) -> str:
             s.MARKT_ID,
             strftime(c.DATE_D, '%Y-%m-%d') AS DATE,
             COALESCE(src.UMS_MENGE, 0.0)::DOUBLE AS UMS_MENGE,
-            COALESCE(src.ABVERKAUFTE_MENGE, 0.0)::DOUBLE AS ABVERKAUFTE_MENGE,
+            COALESCE(src.ABVERKAUFTE_MENGE_KG, 0.0)::DOUBLE AS ABVERKAUFTE_MENGE_KG,
             COALESCE(src.UMS_VK_WERT, 0.0)::DOUBLE AS UMS_VK_WERT,
             COALESCE(src.AKTION_KENNZEICHEN, 0)::TINYINT AS AKTION_KENNZEICHEN,
             COALESCE(src.RABATT, 0)::TINYINT AS RABATT,

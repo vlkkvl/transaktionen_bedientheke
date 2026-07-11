@@ -28,18 +28,19 @@ from src.data.cleaning.rules import (
     filtered_transactions_expr,
 )
 
-IN_DIR = ROOT / "data" / "interim" / "transactions_per_year"
+IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered"
 IN_GLOB = IN_DIR / "transactions_year_*.parquet"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_daily_agg"
 
 KEYS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
-SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE", "UMS_VK_WERT", "GRAMM_BON"]
+SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE_KG", "UMS_VK_WERT", "GRAMM_BON"]
 QTY_EPS = 1e-3
 FLAG_COLS = ["AKTION_KENNZEICHEN", "RABATT", "ARTIKELRABATT"]
 FIRST_COLS = [
     "ARTIKEL_BEZ",
     "ARTIKEL_INHALT",
     "VERKAUFSEINHEIT",
+    "GEWICHT_FLAG",
     "GEWICHTSARTIKEL",
     "MARKT_NR",
     "MANDANT_ID",
@@ -143,10 +144,10 @@ def aggregate_select_sql(columns: list[str], read_expr: str) -> str:
             {ident("DATE")},
             SUM(COALESCE({ident("UMS_MENGE")}, 0.0))::DOUBLE AS {ident("UMS_MENGE")},
             CASE
-                WHEN ABS(SUM(COALESCE({ident("ABVERKAUFTE_MENGE")}, 0.0))) < {QTY_EPS}
+                WHEN ABS(SUM(COALESCE({ident("ABVERKAUFTE_MENGE_KG")}, 0.0))) < {QTY_EPS}
                     THEN 0.0
-                ELSE SUM(COALESCE({ident("ABVERKAUFTE_MENGE")}, 0.0))::DOUBLE
-            END AS {ident("ABVERKAUFTE_MENGE")},
+                ELSE SUM(COALESCE({ident("ABVERKAUFTE_MENGE_KG")}, 0.0))::DOUBLE
+            END AS {ident("ABVERKAUFTE_MENGE_KG")},
             SUM(COALESCE({ident("UMS_VK_WERT")}, 0.0))::DOUBLE AS {ident("UMS_VK_WERT")},
             SUM(COALESCE({ident("GRAMM_BON")}, 0.0))::DOUBLE AS {ident("GRAMM_BON")},
             {flag_select},
