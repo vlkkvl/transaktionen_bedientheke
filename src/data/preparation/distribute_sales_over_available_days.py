@@ -33,6 +33,7 @@ IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_no_outliers"
 OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days_availability_proxy"
 REPLENISHMENT_DIR = ROOT / "data" / "raw" / "wareneingaenge"
 REPLENISHMENT_LOOKBACK_DAYS = 7
+REPLENISHMENT_FILE_GLOB = "*.csv*"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
 SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE_KG", "UMS_VK_WERT"]
@@ -370,12 +371,12 @@ def main() -> None:
     if not input_files:
         raise FileNotFoundError(f"No parquet files found in {IN_DIR}")
 
-    replenishment_files = sorted(REPLENISHMENT_DIR.glob("*.csv.gz"))
+    replenishment_files = sorted(REPLENISHMENT_DIR.glob(REPLENISHMENT_FILE_GLOB))
     if not replenishment_files:
         raise FileNotFoundError(f"No goods-receipt CSV files found in {REPLENISHMENT_DIR}")
 
     input_glob = str(IN_DIR / "transactions_year_*.parquet")
-    replenishment_glob = str(REPLENISHMENT_DIR / "*.csv.gz")
+    replenishment_glob = str(REPLENISHMENT_DIR / REPLENISHMENT_FILE_GLOB)
     con = duckdb.connect()
     con.execute("PRAGMA threads=8")
     con.execute("SET preserve_insertion_order=false")

@@ -86,9 +86,12 @@ def compute_series_metrics(
     con = _new_connection()
     metrics = con.execute(query, [glob]).fetchdf()
     metrics = add_demand_class(metrics)
-    return metrics[metrics["demand_periods"] >= min_demand_periods].reset_index(
+    filtered = metrics[metrics["demand_periods"] >= min_demand_periods].reset_index(
         drop=True
     )
+    filtered.attrs["series_before_min_demand_filter"] = len(metrics)
+    filtered.attrs["excluded_by_min_demand_periods"] = len(metrics) - len(filtered)
+    return filtered
 
 
 def select_evaluation_keys(

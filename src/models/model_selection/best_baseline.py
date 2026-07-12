@@ -87,6 +87,37 @@ def _print_series_counts_by_cluster(evaluation_keys: pd.DataFrame) -> None:
         _print_progress(f"  {demand_class}: {count:,}")
 
 
+def _print_excluded_series_counts(
+    series_metrics: pd.DataFrame,
+    evaluation_keys: pd.DataFrame,
+    config: SelectionConfig,
+) -> None:
+    excluded_by_demand_periods = int(
+        series_metrics.attrs.get("excluded_by_min_demand_periods", 0)
+    )
+    total_series = len(series_metrics) + excluded_by_demand_periods
+    min_required_periods = config.min_train_size + config.forecast_periods
+    supported_class = series_metrics["demand_class"].isin(DEMAND_CLASSES)
+    enough_active_periods = series_metrics["active_periods"] >= min_required_periods
+
+    excluded_unsupported_class = int((~supported_class).sum())
+    excluded_too_short = int((supported_class & ~enough_active_periods).sum())
+    eligible_for_selection = int((supported_class & enough_active_periods).sum())
+    excluded_by_cap = max(0, eligible_for_selection - len(evaluation_keys))
+
+    _print_progress(f"{total_series:,} total series")
+    _print_progress(f"  - {excluded_by_demand_periods:,} too few demand days")
+    _print_progress(f"  = {len(series_metrics):,} classified series")
+    _print_progress(
+        f"  - {excluded_too_short:,} too few active days for rolling evaluation"
+    )
+    if excluded_unsupported_class:
+        _print_progress(f"  - {excluded_unsupported_class:,} unsupported demand class")
+    if excluded_by_cap:
+        _print_progress(f"  - {excluded_by_cap:,} above max-series cap")
+    _print_progress(f"  = {len(evaluation_keys):,} evaluated series")
+
+
 def run_baseline_selection(config: SelectionConfig) -> BaselineSelectionResult:
     """Run the complete cluster-wise baseline selection workflow."""
     period_label = config.period_label
@@ -115,6 +146,7 @@ def run_baseline_selection(config: SelectionConfig) -> BaselineSelectionResult:
         max_series_per_class=config.max_series_per_class,
     )
     _print_progress(f"Selected {len(evaluation_keys):,} series for evaluation.")
+    _print_excluded_series_counts(series_metrics, evaluation_keys, config)
     _print_series_counts_by_cluster(evaluation_keys)
 
     _print_progress(f"Loading {config.horizon} demand rows ...")
