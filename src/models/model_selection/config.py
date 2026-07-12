@@ -20,7 +20,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-DEFAULT_OUTPUT_DIR = ROOT / "reports" / "results_daily_7d"
 DEFAULT_GROUP_COLS: tuple[str, ...] = ("ARTIKEL_ID", "MARKT_ID")
 DEFAULT_DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 
@@ -94,6 +93,25 @@ DEFAULT_MIN_TRAIN_SIZE = 180
 # non-overlapping windows.
 DEFAULT_STEP = 1
 
+
+def output_dir_for_selection(
+    horizon: str,
+    forecast_periods: int,
+    step: int,
+) -> Path:
+    """Return the result directory for a selection run."""
+    horizon = normalize_horizon(horizon)
+    forecast_periods = _positive_int(forecast_periods, "forecast_periods")
+    step = _positive_int(step, "step")
+    return ROOT / "reports" / "baseline" / f"{horizon}_{forecast_periods}_{step}"
+
+
+DEFAULT_OUTPUT_DIR = output_dir_for_selection(
+    DEFAULT_HORIZON,
+    DEFAULT_FORECAST_PERIODS,
+    DEFAULT_STEP,
+)
+
 # Utilize parallel execution with 7 cpus
 DEFAULT_N_JOBS = max(1, (os.cpu_count() or 1) - 1)
 
@@ -108,7 +126,7 @@ class SelectionConfig:
 
     horizon: str = DEFAULT_HORIZON
     data_dir: Path | None = None
-    output_dir: Path = DEFAULT_OUTPUT_DIR
+    output_dir: Path | None = None
     demand_col: str = DEFAULT_DEMAND_COL
     group_cols: tuple[str, ...] = DEFAULT_GROUP_COLS
 
@@ -133,11 +151,17 @@ class SelectionConfig:
             if self.data_dir is None
             else Path(self.data_dir)
         )
+        output_dir = (
+            output_dir_for_selection(horizon, forecast_periods, step)
+            if self.output_dir is None
+            else Path(self.output_dir)
+        )
 
         object.__setattr__(self, "horizon", horizon)
         object.__setattr__(self, "forecast_periods", forecast_periods)
         object.__setattr__(self, "step", step)
         object.__setattr__(self, "data_dir", data_dir)
+        object.__setattr__(self, "output_dir", output_dir)
 
     @property
     def period_label(self) -> str:

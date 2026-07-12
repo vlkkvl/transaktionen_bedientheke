@@ -34,14 +34,14 @@ PER_SERIES_COLUMNS = (
 PER_CLUSTER_COLUMNS = (
     "demand_class",
     "model",
+    "wape_median",  # Median per-series WAPE; typical relative error.
+    "wape_pooled",  # Cluster-level WAPE from pooled total errors and actuals.
     "n_series",  # Number of product-store series evaluated in the cluster.
     "n_windows",  # Total rolling forecast windows across all series.
     "mae_mean",
     "mae_median",
     "rmse_mean",
     "bias_mean",  # Average per-series direction of forecast bias.
-    "wape_median",  # Median per-series WAPE; typical relative error.
-    "wape_pooled",  # Cluster-level WAPE from pooled total errors and actuals.
     "abs_error_sum",  # Total absolute error across the whole cluster.
     "actual_sum",  # Total absolute actual demand across the whole cluster.
     "forecast_sum",  # Total forecasted demand across the whole cluster.

@@ -283,7 +283,17 @@ def _parse_args() -> argparse.Namespace:
         action="append",
         help="Optional baseline model name. Repeat to restrict the registry pool.",
     )
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for CSV artifacts. Defaults to "
+            f"{DEFAULT_OUTPUT_DIR} for the config defaults, or the matching "
+            "reports/baseline/{horizon}_{forecast_periods}_{step} directory "
+            "for CLI overrides."
+        ),
+    )
     return parser.parse_args()
 
 
