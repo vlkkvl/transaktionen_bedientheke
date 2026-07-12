@@ -108,7 +108,7 @@ def validate_replenishment_schema(
             DESCRIBE SELECT *
             FROM read_csv_auto(
                 {sql_literal(replenishment_glob)},
-                delim=';',
+                delim=',',
                 header=true,
                 union_by_name=true
             )
@@ -196,7 +196,7 @@ def create_replenishment_table(
             SUM(CAST(w.WE_MENGE_VKE AS DOUBLE)) AS POSITIVE_WE_MENGE_VKE
         FROM read_csv_auto(
             {sql_literal(replenishment_glob)},
-            delim=';',
+            delim=',',
             header=true,
             union_by_name=true
         ) AS w
