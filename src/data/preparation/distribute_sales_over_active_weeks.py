@@ -6,6 +6,10 @@ zero-sale rows for active open days, this script keeps active weeks with no
 sales as zero-demand weekly rows.
 
 Output ``DATE`` is the Monday week-start date.
+The weekly output also keeps daily-count diagnostics:
+``active_days_in_week``, ``demand_days_in_week``, and
+``zero_days_in_week``.
+** active_days_in_week = demand_days_in_week + zero_days_in_week
 """
 from __future__ import annotations
 
@@ -39,20 +43,20 @@ STATIC_COLS = [
     "WGR_ID",
     "N_WARENKLASSE_KBEZ",
 ]
-OUTPUT_COLS = KEY_COLS + SUM_COLS + FLAG_COLS + STATIC_COLS
+INPUT_COLS = KEY_COLS + SUM_COLS + FLAG_COLS + STATIC_COLS
 
 PERIOD_START_SQL = "date_trunc('week', DATE_D)::DATE"
 
 
 def validate_input_schema(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
-    """Ensure all columns required by the weekly output exist in the inputs."""
+    """Ensure all columns required by the weekly aggregation exist in the inputs."""
     columns = {
         row[0]
         for row in con.execute(
             f"DESCRIBE SELECT * FROM read_parquet({sql_literal(input_glob)})"
         ).fetchall()
     }
-    missing = sorted(set(OUTPUT_COLS) - columns)
+    missing = sorted(set(INPUT_COLS) - columns)
     if missing:
         raise ValueError(f"Input parquet files are missing columns: {missing}")
 
@@ -116,6 +120,21 @@ def output_select_sql(year: int) -> str:
             MAX(COALESCE(AKTION_KENNZEICHEN, 0))::TINYINT AS AKTION_KENNZEICHEN,
             MAX(COALESCE(RABATT, 0))::TINYINT AS RABATT,
             MAX(COALESCE(ARTIKELRABATT, 0))::TINYINT AS ARTIKELRABATT,
+            COUNT(*)::INTEGER AS active_days_in_week,
+            SUM(
+                CASE
+                    WHEN COALESCE(ABVERKAUFTE_MENGE_KG, 0.0) > 0 THEN 1
+                    ELSE 0
+                END
+            )::INTEGER AS demand_days_in_week,
+            (
+                COUNT(*) - SUM(
+                    CASE
+                        WHEN COALESCE(ABVERKAUFTE_MENGE_KG, 0.0) > 0 THEN 1
+                        ELSE 0
+                    END
+                )
+            )::INTEGER AS zero_days_in_week,
             {static_select}
         FROM normalized
         GROUP BY ARTIKEL_ID, MARKT_ID, PERIOD_START

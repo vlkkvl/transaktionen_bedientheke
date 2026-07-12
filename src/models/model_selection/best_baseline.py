@@ -30,6 +30,7 @@ from src.models.model_selection.config import (
     DEFAULT_N_JOBS,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_SELECTION_METRIC,
+    DEFAULT_STEP,
     DEFAULT_MAX_SERIES_PER_CLUSTER,
     SelectionConfig,
     SUPPORTED_HORIZONS,
@@ -247,10 +248,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--step",
         type=int,
-        default=None,
+        default=DEFAULT_STEP,
         help=(
             "Stride between successive sliding-window origins. Defaults to "
-            "the forecast period count."
+            f"{DEFAULT_STEP} from config.DEFAULT_STEP."
         ),
     )
     parser.add_argument(
