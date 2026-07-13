@@ -1,9 +1,9 @@
 """Expand daily aggregate sales over every active open day.
 
 The input is daily sales per (ARTIKEL_ID, MARKT_ID, DATE).  For every
-article/store pair, this script creates rows for every open day between its
-first and last observed sale date.  Missing sales days are filled with zero
-sales and zero flags.
+article/store pair, this script creates rows for every open day from its first
+positive sale date through the latest date in the input transaction table.
+Missing sales days are filled with zero sales and zero flags.
 """
 from __future__ import annotations
 
@@ -25,7 +25,8 @@ IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_no_outliers"
 OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
-SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE_KG", "UMS_VK_WERT"]
+DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
+SUM_COLS = ["UMS_MENGE", DEMAND_COL, "UMS_VK_WERT"]
 FLAG_COLS = ["AKTION_KENNZEICHEN", "RABATT", "ARTIKELRABATT"]
 STATIC_COLS = [
     "ARTIKEL_BEZ",
@@ -105,22 +106,32 @@ def validate_input_schema(con: duckdb.DuckDBPyConnection, input_glob: str) -> No
         raise ValueError(f"Input parquet files are missing columns: {missing}")
 
 
-def create_series_table(con: duckdb.DuckDBPyConnection) -> None:
-    """Create one active date range per article/store pair."""
+def create_series_table(
+    con: duckdb.DuckDBPyConnection,
+    global_end_date: pd.Timestamp,
+) -> None:
+    """Create one date range per pair from first sale to global input end date."""
     static_select = ",\n            ".join(
         f"arg_min({col}, DATE_D) AS {col}" for col in STATIC_COLS
     )
+    global_end_date_sql = sql_literal(pd.Timestamp(global_end_date).date().isoformat())
     con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE series AS
         SELECT
             ARTIKEL_ID,
             MARKT_ID,
-            MIN(DATE_D) AS START_DATE,
-            MAX(DATE_D) AS END_DATE,
+            MIN(
+                CASE
+                    WHEN COALESCE({DEMAND_COL}, 0.0) > 0 THEN DATE_D
+                    ELSE NULL
+                END
+            ) AS START_DATE,
+            CAST({global_end_date_sql} AS DATE) AS END_DATE,
             {static_select}
         FROM source
         GROUP BY ARTIKEL_ID, MARKT_ID
+        HAVING START_DATE IS NOT NULL
         """
     )
 
@@ -202,9 +213,12 @@ def main() -> None:
     years = sorted(calendar["YEAR"].unique().tolist())
     t0 = step(f"Created Niedersachsen open-day calendar for {len(years)} years", t0)
 
-    create_series_table(con)
+    create_series_table(con, max_date)
     series_count = con.execute("SELECT COUNT(*) FROM series").fetchone()[0]
-    t0 = step(f"Created {series_count:,} article/store active periods", t0)
+    t0 = step(
+        f"Created {series_count:,} article/store active periods through {max_date}",
+        t0,
+    )
 
     write_outputs(con, years)
 
