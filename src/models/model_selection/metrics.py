@@ -5,7 +5,7 @@ The pipeline is:
 1. ``per_series_metrics`` — aggregate windows for each (series, model).
 2. ``per_cluster_metrics`` — aggregate series for each (demand_class, model),
    reporting both ``wape_median`` (typical-series accuracy) and ``wape_pooled``
-   (cluster-total accuracy).
+   (cluster-total accuracy), plus MASE summaries.
 
 These steps purely compute numbers; they make no selection decisions.
 """
@@ -27,6 +27,7 @@ PER_SERIES_COLUMNS = (
     "mae",
     "rmse",
     "bias",
+    "mase",  # Mean absolute scaled error against in-sample naive one-step error.
     "wape",
     "forecast_to_actual_ratio",  # Forecasted volume divided by actual volume.
 )
@@ -41,6 +42,8 @@ PER_CLUSTER_COLUMNS = (
     "mae_mean",
     "mae_median",
     "rmse_mean",
+    "mase_mean",
+    "mase_median",
     "bias_mean",  # Average per-series direction of forecast bias.
     "abs_error_sum",  # Total absolute error across the whole cluster.
     "actual_sum",  # Total absolute actual demand across the whole cluster.
@@ -54,6 +57,16 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     if denominator > 0:
         return numerator / denominator
     return 0.0 if numerator == 0 else np.inf
+
+
+def _scaled_abs_errors(abs_errors: pd.Series, scales: pd.Series) -> list[float]:
+    """MASE row contributions, preserving 0/0 -> 0 and x/0 -> +inf."""
+    return [
+        _safe_ratio(float(error), float(scale))
+        if pd.notna(scale)
+        else np.nan
+        for error, scale in zip(abs_errors, scales)
+    ]
 
 
 def per_series_metrics(
@@ -72,6 +85,13 @@ def per_series_metrics(
         signed_error=errors,
         abs_actual=window_scores["actual"].abs(),
     )
+    if "mase_scale" in enriched.columns:
+        enriched["scaled_abs_error"] = _scaled_abs_errors(
+            enriched["abs_error"],
+            enriched["mase_scale"],
+        )
+    else:
+        enriched["scaled_abs_error"] = np.nan
 
     grouped = enriched.groupby(
         [*group_cols, "demand_class", "model"], observed=True, sort=False
@@ -83,6 +103,7 @@ def per_series_metrics(
         mae=("abs_error", "mean"),
         mse=("squared_error", "mean"),  # Intermediate value for RMSE.
         bias=("signed_error", "mean"),
+        mase=("scaled_abs_error", "mean"),
     ).reset_index()
 
     grouped["rmse"] = np.sqrt(grouped["mse"])
@@ -110,6 +131,8 @@ def per_cluster_metrics(series_scores: pd.DataFrame) -> pd.DataFrame:
             mae_mean=("mae", "mean"),
             mae_median=("mae", "median"),
             rmse_mean=("rmse", "mean"),
+            mase_mean=("mase", "mean"),
+            mase_median=("mase", "median"),
             bias_mean=("bias", "mean"),
             wape_median=("wape", "median"),
             abs_error_sum=("abs_error_sum", "sum"),

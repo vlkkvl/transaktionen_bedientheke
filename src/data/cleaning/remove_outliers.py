@@ -29,7 +29,7 @@ OUT_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_no_outliers"
 
 DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 GROUP_COLS = ["ARTIKEL_ID", "MARKT_ID"]
-IQR_K = 3.0
+IQR_K = 2.0
 
 
 def temp_output_path(path: Path) -> Path:

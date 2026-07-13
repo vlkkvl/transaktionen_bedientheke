@@ -306,7 +306,13 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--metric",
-        choices=("wape_pooled", "wape_median", "rmse_mean"),
+        choices=(
+            "wape_pooled",
+            "wape_median",
+            "rmse_mean",
+            "mase_mean",
+            "mase_median",
+        ),
         default=DEFAULT_SELECTION_METRIC,
     )
     parser.add_argument(
@@ -360,7 +366,13 @@ def main() -> None:
     )
     print(f"Wrote results to {config.output_dir}")
     if not result.best_by_cluster.empty:
-        columns = ["demand_class", "model", "wape_median", "wape_pooled"]
+        columns = [
+            "demand_class",
+            "model",
+            "wape_median",
+            "wape_pooled",
+            "mase_mean",
+        ]
         print(result.best_by_cluster[columns].to_string(index=False))
 
 

@@ -35,6 +35,7 @@ WINDOW_COLUMNS = (
     "period_start",
     "actual",
     "forecast",
+    "mase_scale",
 )
 
 
@@ -114,6 +115,13 @@ def _window_origins(
     return range(min_train_size, last_origin + 1, step)
 
 
+def _mase_scale(train: np.ndarray) -> float:
+    """Mean absolute one-step naive error in the training window."""
+    if len(train) < 2:
+        return np.nan
+    return float(np.mean(np.abs(np.diff(train))))
+
+
 def _forecast_one_series(
     key_data: dict[str, object],
     demand_class: str,
@@ -134,6 +142,7 @@ def _forecast_one_series(
         _window_origins(len(values), min_train_size, step, forecast_periods)
     ):
         train = values[:origin]
+        mase_scale = _mase_scale(train)
         actuals = values[origin : origin + forecast_periods]
         forecast_period_starts = period_starts[origin : origin + forecast_periods]
         forecast_origin = period_starts[origin]
@@ -160,6 +169,7 @@ def _forecast_one_series(
                         "period_start": period_start,
                         "actual": float(actual),
                         "forecast": float(forecast),
+                        "mase_scale": mase_scale,
                     }
                 )
     return rows

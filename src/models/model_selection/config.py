@@ -25,10 +25,22 @@ DEFAULT_DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 
 # Choose the aggregation horizon used by model selection.
 # Valid values: "daily", "weekly", "monthly".
-HORIZON = "daily"
+HORIZON = "weekly"
 
 # How many future periods each window predicts (1 day, 1 week, 1 month etc.)
-FORECAST_PERIODS = 7
+FORECAST_PERIODS = 1
+
+# How far rolling origin moves between windows.
+# Use 1 for overlapping daily 7-day forecasts; use DEFAULT_FORECAST_PERIODS for
+# non-overlapping windows.
+DEFAULT_STEP = 1
+
+# Number of periods with positive demand (used for ADI/CV2 clustering)
+DEFAULT_MIN_DEMAND_PERIODS = 10
+
+# Number of available active periods overall (not necessarily with + demand)
+# Used for fitting the models
+DEFAULT_MIN_TRAIN_SIZE = 28
 
 SUPPORTED_HORIZONS: tuple[str, ...] = ("daily", "weekly", "monthly")
 HORIZON_ALIASES = {
@@ -80,18 +92,6 @@ def _positive_int(value: int, name: str) -> int:
 DEFAULT_HORIZON = normalize_horizon(HORIZON)
 DEFAULT_FORECAST_PERIODS = _positive_int(FORECAST_PERIODS, "FORECAST_PERIODS")
 DEFAULT_DATA_DIR = data_dir_for_horizon(DEFAULT_HORIZON)
-
-# Number of periods with positive demand (used for ADI/CV2 clustering)
-DEFAULT_MIN_DEMAND_PERIODS = 10
-
-# Number of available active periods overall (not necessarily with + demand)
-# Used for fitting the models
-DEFAULT_MIN_TRAIN_SIZE = 180
-
-# How far rolling origin moves between windows.
-# Use 1 for overlapping daily 7-day forecasts; use DEFAULT_FORECAST_PERIODS for
-# non-overlapping windows.
-DEFAULT_STEP = 1
 
 
 def output_dir_for_selection(
