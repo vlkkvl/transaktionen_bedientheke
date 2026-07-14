@@ -13,31 +13,46 @@ from time import perf_counter
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from src.data.common import ROOT, configure_duckdb, sql_literal, step
+from src.data.common import (
+    ROOT,
+    configure_duckdb,
+    parquet_files,
+    read_parquet_expr,
+    sql_literal,
+    step,
+)
 from src.data.cleaning.rules import (
     DUPLICATE_KEY_COLS,
+    FCM_RULE,
     duplicate_keys_sql,
-    filtered_transactions_expr,
 )
 
 IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered"
-IN_GLOB = IN_DIR / "transactions_year_*.parquet"
+BASE_IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered_no_fcm"
 DUP_OUT_DIR = ROOT / "data" / "interim" / "transactions_duplicates"
 DUP_OUT_FILE = DUP_OUT_DIR / "duplicates_transactions_5_years.csv"
 
 
+def default_input_dir() -> Path:
+    if FCM_RULE and parquet_files(BASE_IN_DIR):
+        return BASE_IN_DIR
+    return IN_DIR
+
+
 def main() -> None:
-    if not list(IN_DIR.glob("transactions_year_*.parquet")):
-        raise FileNotFoundError(f"No parquet files found in {IN_DIR}")
+    in_dir = default_input_dir()
+    input_glob = in_dir / "transactions_year_*.parquet"
+    if not parquet_files(in_dir):
+        raise FileNotFoundError(f"No parquet files found in {in_dir}")
 
     DUP_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     con = configure_duckdb()
     con.execute("PRAGMA disable_progress_bar")
-    read_expr = filtered_transactions_expr(IN_GLOB, filename=True)
+    read_expr = read_parquet_expr(input_glob, filename=True)
     keys_sql = duplicate_keys_sql()
 
-    print(f"Scanning filtered transactions from {IN_DIR}")
+    print(f"Scanning filtered transactions from {in_dir}")
     print(f"Duplicate key columns: {DUPLICATE_KEY_COLS}")
 
     t0 = perf_counter()

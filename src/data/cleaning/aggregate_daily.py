@@ -1,4 +1,4 @@
-"""Aggregate filtered, de-duplicated transactions to daily demand."""
+"""Aggregate base-filtered, de-duplicated transactions to daily demand."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,6 +16,7 @@ from src.data.common import (
     columns_for_expr,
     configure_duckdb,
     ident,
+    parquet_files,
     read_parquet_expr,
     sql_literal,
     step,
@@ -24,13 +25,15 @@ from src.data.cleaning.rules import (
     BINARY_FLAG_COLUMNS,
     DROP_COLUMNS,
     DUPLICATE_KEY_COLS,
+    FCM_RULE,
     duplicate_keys_sql,
-    filtered_transactions_expr,
+    fcm_filter_condition,
 )
 
 IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered"
-IN_GLOB = IN_DIR / "transactions_year_*.parquet"
+BASE_IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered_no_fcm"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_daily_agg"
+FCM_OUT_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_fcm"
 
 KEYS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
 SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE_KG", "UMS_VK_WERT", "GRAMM_BON"]
@@ -157,20 +160,72 @@ def aggregate_select_sql(columns: list[str], read_expr: str) -> str:
         """
 
 
-def main() -> None:
-    input_files = sorted(IN_DIR.glob("transactions_year_*.parquet"))
-    if not input_files:
-        raise FileNotFoundError(f"No parquet files found in {IN_DIR}")
+def default_input_dir() -> Path:
+    if FCM_RULE and parquet_files(BASE_IN_DIR):
+        return BASE_IN_DIR
+    return IN_DIR
 
-    clear_parquet_outputs(OUT_DIR)
+
+def materialize_fcm_daily_agg(
+    con: duckdb.DuckDBPyConnection,
+    source_dir: Path = OUT_DIR,
+    out_dir: Path = FCM_OUT_DIR,
+) -> None:
+    source_files = parquet_files(source_dir)
+    if not source_files:
+        raise FileNotFoundError(f"No parquet files found in {source_dir}")
+
+    clear_parquet_outputs(out_dir)
+
+    total_in = 0
+    total_out = 0
+    print(f"\nMaterializing FCM-filtered daily aggregates to {out_dir}")
+    for path in source_files:
+        output_file = out_dir / path.name
+        source_expr = read_parquet_expr(path)
+        rows_in = con.execute(f"SELECT COUNT(*) FROM {source_expr}").fetchone()[0]
+        con.execute(
+            f"""
+            COPY (
+                SELECT *
+                FROM {source_expr}
+                WHERE {fcm_filter_condition()}
+            )
+            TO {sql_literal(output_file)}
+            (FORMAT PARQUET)
+            """
+        )
+        rows_out = con.execute(
+            f"SELECT COUNT(*) FROM {read_parquet_expr(output_file)}"
+        ).fetchone()[0]
+        total_in += rows_in
+        total_out += rows_out
+        print(f"{path.name}: in={rows_in:,} out={rows_out:,}")
+
+    print(f"FCM daily groups written: {total_out:,} of {total_in:,}")
+
+
+def main(
+    in_dir: Path | None = None,
+    out_dir: Path = OUT_DIR,
+    *,
+    write_fcm: bool | None = None,
+) -> None:
+    in_dir = in_dir or default_input_dir()
+    input_files = sorted(in_dir.glob("transactions_year_*.parquet"))
+    if not input_files:
+        raise FileNotFoundError(f"No parquet files found in {in_dir}")
+
+    clear_parquet_outputs(out_dir)
 
     con = configure_duckdb()
-    all_read_expr = filtered_transactions_expr(IN_GLOB, filename=True)
+    in_glob = in_dir / "transactions_year_*.parquet"
+    all_read_expr = read_parquet_expr(in_glob, filename=True)
     columns = columns_for_expr(con, all_read_expr)
     validate_input_schema(columns)
 
     t0 = perf_counter()
-    print(f"Reading filtered transactions from {IN_DIR}")
+    print(f"Reading filtered transactions from {in_dir}")
     n_groups, n_dup_rows = create_duplicate_key_table(con, all_read_expr)
     t0 = step(
         f"Prepared duplicate keys: {n_groups:,} groups, {n_dup_rows:,} rows",
@@ -180,8 +235,8 @@ def main() -> None:
     total_in = 0
     total_out = 0
     for input_file in input_files:
-        output_file = OUT_DIR / input_file.name
-        read_expr = filtered_transactions_expr(input_file, filename=True)
+        output_file = out_dir / input_file.name
+        read_expr = read_parquet_expr(input_file, filename=True)
         rows_in = con.execute(f"SELECT COUNT(*) FROM {read_expr}").fetchone()[0]
         con.execute(
             f"""
@@ -203,7 +258,12 @@ def main() -> None:
     print("\nSummary")
     print(f"  filtered rows scanned: {total_in:,}")
     print(f"  daily groups written:  {total_out:,}")
-    print(f"  output dir:            {OUT_DIR}")
+    print(f"  output dir:            {out_dir}")
+
+    if write_fcm is None:
+        write_fcm = FCM_RULE and out_dir == OUT_DIR
+    if write_fcm:
+        materialize_fcm_daily_agg(con, out_dir, FCM_OUT_DIR)
 
 
 if __name__ == "__main__":

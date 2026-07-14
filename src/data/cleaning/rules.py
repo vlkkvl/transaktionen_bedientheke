@@ -184,12 +184,17 @@ def weight_filter_condition(alias: str | None = None) -> str:
     return f"({gewicht_flag_expression_sql(alias)}) = 1"
 
 
-def active_rule_flags() -> tuple[bool, bool, bool]:
-    return bool(MANDANT_RULE), bool(FCM_RULE), bool(WEIGHT_RULE)
+def active_rule_flags(*, include_fcm: bool | None = None) -> tuple[bool, bool, bool]:
+    fcm_rule = bool(FCM_RULE) if include_fcm is None else bool(FCM_RULE and include_fcm)
+    return bool(MANDANT_RULE), fcm_rule, bool(WEIGHT_RULE)
 
 
-def transaction_filter_condition(alias: str | None = None) -> str:
-    mandant_rule, fcm_rule, weight_rule = active_rule_flags()
+def transaction_filter_condition(
+    alias: str | None = None,
+    *,
+    include_fcm: bool | None = None,
+) -> str:
+    mandant_rule, fcm_rule, weight_rule = active_rule_flags(include_fcm=include_fcm)
     conditions = [f"({ums_menge_filter_condition(alias)})"]
     if mandant_rule:
         conditions.append(f"({mandant_filter_condition(alias)})")
@@ -205,11 +210,16 @@ def duplicate_keys_sql(alias: str | None = None) -> str:
     return ", ".join(f"{prefix}{ident(col)}" for col in DUPLICATE_KEY_COLS)
 
 
-def filtered_transactions_expr(path: Path | str, *, filename: bool = False) -> str:
+def filtered_transactions_expr(
+    path: Path | str,
+    *,
+    filename: bool = False,
+    include_fcm: bool | None = None,
+) -> str:
     return f"""
         (
             SELECT *
             FROM {read_parquet_expr(path, filename=filename)}
-            WHERE {transaction_filter_condition()}
+            WHERE {transaction_filter_condition(include_fcm=include_fcm)}
         )
         """

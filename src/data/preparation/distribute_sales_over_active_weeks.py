@@ -27,6 +27,8 @@ from src.data.common import ROOT, sql_literal, step
 
 IN_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days"
 OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_weeks"
+FCM_IN_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days_fcm"
+FCM_OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_weeks_fcm"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
 SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE_KG", "UMS_VK_WERT"]
@@ -141,14 +143,14 @@ def output_select_sql(year: int) -> str:
         """
 
 
-def write_outputs(con: duckdb.DuckDBPyConnection) -> None:
+def write_outputs(con: duckdb.DuckDBPyConnection, out_dir: Path) -> None:
     """Write one weekly parquet file per period-start year."""
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    for old_file in OUT_DIR.glob("transactions_year_*.parquet"):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old_file in out_dir.glob("transactions_year_*.parquet"):
         old_file.unlink()
 
     for year in period_years(con):
-        out_file = OUT_DIR / f"transactions_year_{year}.parquet"
+        out_file = out_dir / f"transactions_year_{year}.parquet"
         t0 = perf_counter()
         con.execute(
             f"""
@@ -163,12 +165,12 @@ def write_outputs(con: duckdb.DuckDBPyConnection) -> None:
         print(f"{out_file.name}: {row_count:,} rows ({perf_counter() - t0:.1f}s)")
 
 
-def main() -> None:
-    files = sorted(IN_DIR.glob("*.parquet"))
+def main(in_dir: Path = IN_DIR, out_dir: Path = OUT_DIR) -> None:
+    files = sorted(in_dir.glob("*.parquet"))
     if not files:
-        raise FileNotFoundError(f"No parquet files found in {IN_DIR}")
+        raise FileNotFoundError(f"No parquet files found in {in_dir}")
 
-    input_glob = str(IN_DIR / "*.parquet")
+    input_glob = str(in_dir / "*.parquet")
     con = duckdb.connect()
     con.execute("PRAGMA threads=4")
     con.execute("SET preserve_insertion_order=false")
@@ -179,7 +181,7 @@ def main() -> None:
     create_source_view(con, input_glob)
     t0 = step("Created source view", t0)
 
-    write_outputs(con)
+    write_outputs(con, out_dir)
     step("Wrote active-week outputs", t0)
 
 

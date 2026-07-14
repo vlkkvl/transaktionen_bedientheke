@@ -22,6 +22,7 @@ from src.data.common import (
     step,
 )
 from src.data.cleaning.rules import (
+    FCM_RULE,
     GEWICHT_FLAG_COL,
     gewicht_flag_expression_sql,
     transaction_filter_condition,
@@ -29,6 +30,7 @@ from src.data.cleaning.rules import (
 
 IN_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered"
+BASE_OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered_no_fcm"
 
 TARGET_COL = "ABVERKAUFTE_MENGE_KG"
 GEWICHT_FLAG = GEWICHT_FLAG_COL
@@ -91,12 +93,12 @@ def output_select_sql(columns: list[str]) -> str:
     return ",\n            ".join(expressions)
 
 
-def filtered_source_expr_sql(read_expr: str) -> str:
+def filtered_source_expr_sql(read_expr: str, *, include_fcm: bool) -> str:
     return f"""
         (
             SELECT *
             FROM {read_expr}
-            WHERE {transaction_filter_condition()}
+            WHERE {transaction_filter_condition(include_fcm=include_fcm)}
         )
         """
 
@@ -106,13 +108,15 @@ def write_with_goal_variable(
     input_path: Path,
     output_path: Path,
     columns: list[str],
+    *,
+    include_fcm: bool,
 ) -> tuple[int, int]:
     out_path = temp_output_path(output_path)
     if out_path.exists():
         out_path.unlink()
 
     read_expr = read_parquet_expr(input_path)
-    filtered_expr = filtered_source_expr_sql(read_expr)
+    filtered_expr = filtered_source_expr_sql(read_expr, include_fcm=include_fcm)
     rows_in = con.execute(f"SELECT COUNT(*) FROM {read_expr}").fetchone()[0]
     con.execute(
         f"""
@@ -132,26 +136,68 @@ def write_with_goal_variable(
     return rows_in, rows_out
 
 
-def main() -> None:
-    input_files = require_parquet_files(IN_DIR)
-    clear_parquet_outputs(OUT_DIR)
-    con = configure_duckdb()
+def write_dataset(
+    con: duckdb.DuckDBPyConnection,
+    input_files: list[Path],
+    out_dir: Path,
+    *,
+    include_fcm: bool,
+    label: str,
+) -> None:
+    clear_parquet_outputs(out_dir)
 
-    t0 = perf_counter()
     total_in = 0
     total_out = 0
+    print(f"\nWriting {label}")
     for path in input_files:
-        output_path = OUT_DIR / path.name
+        output_path = out_dir / path.name
         read_expr = read_parquet_expr(path)
         columns = columns_for_expr(con, read_expr)
         validate_input_schema(columns)
-        rows_in, rows_out = write_with_goal_variable(con, path, output_path, columns)
+        rows_in, rows_out = write_with_goal_variable(
+            con,
+            path,
+            output_path,
+            columns,
+            include_fcm=include_fcm,
+        )
         total_in += rows_in
         total_out += rows_out
         print(f"{path.name}: in={rows_in:,}, filtered={rows_out:,}")
 
-    print(f"\nTotal: in={total_in:,} out={total_out:,}")
-    print(f"Output dir: {OUT_DIR}")
+    print(f"Total {label}: in={total_in:,} out={total_out:,}")
+    print(f"Output dir: {out_dir}")
+
+
+def main() -> None:
+    input_files = require_parquet_files(IN_DIR)
+    con = configure_duckdb()
+
+    t0 = perf_counter()
+    if FCM_RULE:
+        write_dataset(
+            con,
+            input_files,
+            BASE_OUT_DIR,
+            include_fcm=False,
+            label="base filtered transactions without FCM",
+        )
+        write_dataset(
+            con,
+            input_files,
+            OUT_DIR,
+            include_fcm=True,
+            label="FCM-filtered transactions",
+        )
+    else:
+        write_dataset(
+            con,
+            input_files,
+            OUT_DIR,
+            include_fcm=False,
+            label="filtered transactions",
+        )
+
     step(f"Filtered transactions and defined {TARGET_COL}", t0)
 
 
