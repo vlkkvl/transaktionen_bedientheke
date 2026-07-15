@@ -17,6 +17,8 @@ from src.data.cleaning.rules import (
     ALLOWED_FCM_ARTICLE_IDS,
     ALLOWED_MANDANT_IDS,
     ARTICLE_ID_COL,
+    ARTIKEL_BEZ_COL,
+    EXCLUDED_ARTIKEL_BEZ_VALUES,
     FCM_RULE,
     MANDANT_RULE,
     MANDANT_ID_COL,
@@ -24,6 +26,7 @@ from src.data.cleaning.rules import (
     UMS_MENGE_COL,
     WEIGHT_CONTENT_LIKE,
     WEIGHT_RULE,
+    artikel_bez_filter_condition,
     fcm_filter_condition,
     mandant_filter_condition,
     transaction_filter_condition,
@@ -68,6 +71,10 @@ def main() -> None:
     if WEIGHT_RULE:
         print(f"Keeping rows with ARTIKEL_INHALT LIKE {WEIGHT_CONTENT_LIKE!r}")
     print(f"{UMS_MENGE_COL} threshold: > {MIN_UMS_MENGE}")
+    print(
+        f"Excluding {ARTIKEL_BEZ_COL} values: "
+        f"{sorted(EXCLUDED_ARTIKEL_BEZ_VALUES)}"
+    )
 
     t0 = perf_counter()
     total = count_rows(con, read_expr)
@@ -76,6 +83,14 @@ def main() -> None:
     current_count = count_rows(con, read_expr, current_condition)
     ums_menge_removed = total - current_count
     ums_menge_remaining = current_count
+
+    previous_condition = current_condition
+    previous_count = current_count
+    artikel_bez_condition = artikel_bez_filter_condition()
+    current_condition = combine_conditions(previous_condition, artikel_bez_condition)
+    current_count = count_rows(con, read_expr, current_condition)
+    artikel_bez_removed = previous_count - current_count
+    artikel_bez_remaining = current_count
 
     mandant_counts = []
     mandant_removed = None
@@ -149,6 +164,10 @@ def main() -> None:
     print(
         f"  {UMS_MENGE_COL} filter: removed {ums_menge_removed:,} "
         f"after previous filters, remaining {ums_menge_remaining:,}"
+    )
+    print(
+        f"  {ARTIKEL_BEZ_COL} filter: removed {artikel_bez_removed:,} "
+        f"after previous filters, remaining {artikel_bez_remaining:,}"
     )
     if mandant_removed is None:
         print("  MANDANT_ID filter: disabled")

@@ -6,6 +6,7 @@ from pathlib import Path
 from src.data.common import ident, read_parquet_expr, sql_literal
 
 ARTICLE_ID_COL = "ARTIKEL_ID"
+ARTIKEL_BEZ_COL = "ARTIKEL_BEZ"
 MANDANT_ID_COL = "MANDANT_ID"
 UMS_MENGE_COL = "UMS_MENGE"
 ARTIKEL_INHALT_COL = "ARTIKEL_INHALT"
@@ -17,6 +18,7 @@ WEIGHT_RULE = True
 
 MIN_UMS_MENGE = 0.01
 WEIGHT_CONTENT_LIKE = "%amm%"
+EXCLUDED_ARTIKEL_BEZ_VALUES = {"alt"}
 
 ALLOWED_MANDANT_IDS = {110, 130, 135}
 ALLOWED_FCM_ARTICLE_IDS = {
@@ -169,6 +171,17 @@ def ums_menge_filter_condition(alias: str | None = None) -> str:
     return f"{col} > {MIN_UMS_MENGE}"
 
 
+def artikel_bez_filter_condition(alias: str | None = None) -> str:
+    col = ident(ARTIKEL_BEZ_COL)
+    if alias:
+        col = f"{alias}.{col}"
+    normalized_col = f"LOWER(TRIM(COALESCE(CAST({col} AS VARCHAR), '')))"
+    excluded_values = ", ".join(
+        sql_literal(value.lower()) for value in sorted(EXCLUDED_ARTIKEL_BEZ_VALUES)
+    )
+    return f"{normalized_col} NOT IN ({excluded_values})"
+
+
 def gewicht_flag_expression_sql(alias: str | None = None) -> str:
     col = ident(ARTIKEL_INHALT_COL)
     if alias:
@@ -196,6 +209,7 @@ def transaction_filter_condition(
 ) -> str:
     mandant_rule, fcm_rule, weight_rule = active_rule_flags(include_fcm=include_fcm)
     conditions = [f"({ums_menge_filter_condition(alias)})"]
+    conditions.append(f"({artikel_bez_filter_condition(alias)})")
     if mandant_rule:
         conditions.append(f"({mandant_filter_condition(alias)})")
     if fcm_rule:

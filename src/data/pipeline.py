@@ -24,6 +24,7 @@ from src.data.preparation import (
     distribute_sales_over_active_days,
     distribute_sales_over_active_months,
     distribute_sales_over_active_weeks,
+    filter_no_late_demand
 )
 
 RAW_TRANSACTIONS_DIR = ROOT / "data" / "raw" / "transactions_5_years"
@@ -161,6 +162,7 @@ def main() -> None:
         ("Distribute sales over active days", distribute_active_days_stage),
         ("Aggregate active weeks", aggregate_active_weeks_stage),
         #("Aggregate active months", distribute_sales_over_active_months.main),
+        ("Filter no late demand tails for FCM data", filter_no_late_demand.main)
     ]
 
     started_at = perf_counter()

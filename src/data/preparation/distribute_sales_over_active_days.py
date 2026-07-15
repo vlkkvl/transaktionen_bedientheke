@@ -3,7 +3,8 @@
 The input is daily sales per (ARTIKEL_ID, MARKT_ID, DATE).  For every
 article/store pair, this script creates rows for every open day from its first
 positive sale date through the latest date in the input transaction table.
-Missing sales days are filled with zero sales and zero flags.
+Actual sales on non-regular open days are kept, and missing regular open days
+are filled with zero sales and zero flags.
 """
 from __future__ import annotations
 
@@ -61,14 +62,14 @@ def create_germany_ni_holidays(years: range):
 
 
 def build_calendar(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-    """Return non-holiday dates plus a Sunday flag for store-specific filtering."""
+    """Return all dates with flags for regular open-day filtering."""
     all_dates = pd.date_range(start_date, end_date, freq="D")
     years = range(start_date.year, end_date.year + 1)
     holiday_dates = set(create_germany_ni_holidays(years).keys())
 
     calendar = pd.DataFrame({"DATE_D": all_dates})
     calendar["IS_SUNDAY"] = calendar["DATE_D"].dt.dayofweek == 6
-    calendar = calendar[~calendar["DATE_D"].dt.date.isin(holiday_dates)].copy()
+    calendar["IS_HOLIDAY"] = calendar["DATE_D"].dt.date.isin(holiday_dates)
     calendar["YEAR"] = calendar["DATE_D"].dt.year
     calendar["DATE_D"] = calendar["DATE_D"].dt.date
     return calendar
@@ -139,7 +140,7 @@ def create_series_table(
 
 
 def output_select_sql(year: int) -> str:
-    """Build the yearly SQL query that fills missing open days with zero sales."""
+    """Build the yearly SQL query that fills missing regular open days with zero sales."""
     sunday_open_ids = ", ".join(str(x) for x in SUNDAY_OPEN_MARKT_IDS)
     static_cols = ",\n            ".join(f"s.{col}" for col in STATIC_COLS)
     return f"""
@@ -157,12 +158,18 @@ def output_select_sql(year: int) -> str:
         FROM series s
         JOIN calendar c
             ON c.DATE_D BETWEEN s.START_DATE AND s.END_DATE
-            AND (NOT c.IS_SUNDAY OR s.MARKT_ID IN ({sunday_open_ids}))
         LEFT JOIN source src
             ON src.ARTIKEL_ID = s.ARTIKEL_ID
             AND src.MARKT_ID = s.MARKT_ID
             AND src.DATE_D = c.DATE_D
         WHERE c.YEAR = {year}
+            AND (
+                src.DATE_D IS NOT NULL
+                OR (
+                    NOT c.IS_HOLIDAY
+                    AND (NOT c.IS_SUNDAY OR s.MARKT_ID IN ({sunday_open_ids}))
+                )
+            )
         """
 
 
@@ -213,7 +220,7 @@ def main(in_dir: Path = IN_DIR, out_dir: Path = OUT_DIR) -> None:
     con.register("calendar_df", calendar)
     con.execute("CREATE OR REPLACE TEMP TABLE calendar AS SELECT * FROM calendar_df")
     years = sorted(calendar["YEAR"].unique().tolist())
-    t0 = step(f"Created Niedersachsen open-day calendar for {len(years)} years", t0)
+    t0 = step(f"Created Niedersachsen calendar for {len(years)} years", t0)
 
     create_series_table(con, max_date)
     series_count = con.execute("SELECT COUNT(*) FROM series").fetchone()[0]

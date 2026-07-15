@@ -12,8 +12,8 @@ from src.models.model_selection.config import (
     DEFAULT_DEMAND_COL,
     DEFAULT_FORECAST_PERIODS,
     DEFAULT_GROUP_COLS,
-    DEFAULT_MIN_DEMAND_PERIODS,
     DEFAULT_MIN_TRAIN_SIZE,
+    MIN_DEMAND_PERIODS_UNTIL_ORIGIN,
 )
 
 
@@ -40,13 +40,15 @@ def compute_series_metrics(
     data_dir: Path = DEFAULT_DATA_DIR,
     demand_col: str = DEFAULT_DEMAND_COL,
     group_cols: tuple[str, ...] = DEFAULT_GROUP_COLS,
-    min_demand_periods: int = DEFAULT_MIN_DEMAND_PERIODS,
+    min_demand_periods_until_origin: int = MIN_DEMAND_PERIODS_UNTIL_ORIGIN,
+    min_train_size: int = DEFAULT_MIN_TRAIN_SIZE,
 ) -> pd.DataFrame:
-    """Compute ADI/CV2 and demand class for every period series."""
+    """Compute initial-window ADI/CV2 and demand class for every period series."""
     group_sql = ", ".join(quote_identifier(col) for col in group_cols)
     demand_sql = quote_identifier(demand_col)
     date_sql = quote_identifier("DATE")
     glob = parquet_glob(data_dir)
+    initial_window_filter = f"period_number <= {int(min_train_size)}"
 
     query = f"""
     WITH period_data AS (
@@ -56,6 +58,14 @@ def compute_series_metrics(
             SUM(CAST(COALESCE({demand_sql}, 0) AS DOUBLE)) AS demand
         FROM read_parquet(?)
         GROUP BY {group_sql}, period_start
+    ), ordered_period_data AS (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY {group_sql}
+                ORDER BY period_start
+            ) AS period_number
+        FROM period_data
     ), series AS (
         SELECT
             {group_sql},
@@ -66,31 +76,76 @@ def compute_series_metrics(
             VAR_SAMP(CASE WHEN demand > 0 THEN demand END) AS var_nonzero_demand,
             MIN(period_start) AS first_active_period,
             MAX(period_start) AS last_active_period
-        FROM period_data
+        FROM ordered_period_data
+        GROUP BY {group_sql}
+    ), initial_window AS (
+        SELECT
+            {group_sql},
+            SUM(CASE WHEN {initial_window_filter} THEN 1 ELSE 0 END)
+                AS active_periods_until_origin,
+            SUM(
+                CASE
+                    WHEN {initial_window_filter} AND demand > 0 THEN 1
+                    ELSE 0
+                END
+            ) AS demand_periods_until_origin,
+            SUM(
+                CASE
+                    WHEN {initial_window_filter} THEN demand
+                    ELSE 0
+                END
+            ) AS series_total_demand_until_origin,
+            AVG(
+                CASE
+                    WHEN {initial_window_filter} AND demand > 0 THEN demand
+                    ELSE NULL
+                END
+            ) AS mean_nonzero_demand_until_origin,
+            VAR_SAMP(
+                CASE
+                    WHEN {initial_window_filter} AND demand > 0 THEN demand
+                    ELSE NULL
+                END
+            ) AS var_nonzero_demand_until_origin
+        FROM ordered_period_data
         GROUP BY {group_sql}
     )
     SELECT
-        *,
-        active_periods / NULLIF(demand_periods, 0) AS ADI,
+        s.*,
+        i.active_periods_until_origin,
+        i.demand_periods_until_origin,
+        i.series_total_demand_until_origin,
+        i.mean_nonzero_demand_until_origin,
+        i.var_nonzero_demand_until_origin,
+        i.active_periods_until_origin
+            / NULLIF(i.demand_periods_until_origin, 0) AS ADI,
         CASE
-            WHEN demand_periods > 1 AND mean_nonzero_demand > 0
-                THEN var_nonzero_demand
-                    / (mean_nonzero_demand * mean_nonzero_demand)
-            WHEN demand_periods = 1 THEN 0.0
+            WHEN i.demand_periods_until_origin > 1
+                AND i.mean_nonzero_demand_until_origin > 0
+                THEN i.var_nonzero_demand_until_origin
+                    / (
+                        i.mean_nonzero_demand_until_origin
+                        * i.mean_nonzero_demand_until_origin
+                    )
+            WHEN i.demand_periods_until_origin = 1 THEN 0.0
             ELSE NULL
         END AS CV2
-    FROM series
-    WHERE demand_periods > 0
+    FROM series AS s
+    INNER JOIN initial_window AS i
+        USING ({group_sql})
+    WHERE s.demand_periods > 0
     """
 
     con = _new_connection()
     metrics = con.execute(query, [glob]).fetchdf()
     metrics = add_demand_class(metrics)
-    filtered = metrics[metrics["demand_periods"] >= min_demand_periods].reset_index(
-        drop=True
-    )
+    filtered = metrics[
+        metrics["demand_periods_until_origin"] >= min_demand_periods_until_origin
+    ].reset_index(drop=True)
     filtered.attrs["series_before_min_demand_filter"] = len(metrics)
-    filtered.attrs["excluded_by_min_demand_periods"] = len(metrics) - len(filtered)
+    filtered.attrs["excluded_by_min_demand_periods_until_origin"] = (
+        len(metrics) - len(filtered)
+    )
     return filtered
 
 
@@ -120,7 +175,7 @@ def select_evaluation_keys(
     sort_cols = [
         "demand_class",
         "last_active_period",
-        "demand_periods",
+        "demand_periods_until_origin",
         "active_periods",
         "series_total_demand",
         *group_cols,

@@ -25,13 +25,13 @@ from src.models.model_selection.config import (
     DEFAULT_FORECAST_PERIODS,
     DEFAULT_GROUP_COLS,
     DEFAULT_HORIZON,
-    DEFAULT_MIN_DEMAND_PERIODS,
     DEFAULT_MIN_TRAIN_SIZE,
     DEFAULT_N_JOBS,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_SELECTION_METRIC,
     DEFAULT_STEP,
     DEFAULT_MAX_SERIES_PER_CLUSTER,
+    MIN_DEMAND_PERIODS_UNTIL_ORIGIN,
     SelectionConfig,
     SUPPORTED_HORIZONS,
 )
@@ -92,10 +92,10 @@ def _print_excluded_series_counts(
     evaluation_keys: pd.DataFrame,
     config: SelectionConfig,
 ) -> None:
-    excluded_by_demand_periods = int(
-        series_metrics.attrs.get("excluded_by_min_demand_periods", 0)
+    excluded_by_demand_periods_until_origin = int(
+        series_metrics.attrs.get("excluded_by_min_demand_periods_until_origin", 0)
     )
-    total_series = len(series_metrics) + excluded_by_demand_periods
+    total_series = len(series_metrics) + excluded_by_demand_periods_until_origin
     min_required_periods = config.min_train_size + config.forecast_periods
     supported_class = series_metrics["demand_class"].isin(DEMAND_CLASSES)
     enough_active_periods = series_metrics["active_periods"] >= min_required_periods
@@ -106,7 +106,10 @@ def _print_excluded_series_counts(
     excluded_by_cap = max(0, eligible_for_selection - len(evaluation_keys))
 
     _print_progress(f"{total_series:,} total series")
-    _print_progress(f"  - {excluded_by_demand_periods:,} too few demand days")
+    _print_progress(
+        f"  - {excluded_by_demand_periods_until_origin:,} too few "
+        f"positive-demand {config.period_label}s before first origin"
+    )
     _print_progress(f"  = {len(series_metrics):,} classified series")
     _print_progress(
         f"  - {excluded_too_short:,} too few active days for rolling evaluation"
@@ -130,7 +133,8 @@ def run_baseline_selection(config: SelectionConfig) -> BaselineSelectionResult:
         data_dir=config.data_dir,
         demand_col=config.demand_col,
         group_cols=config.group_cols,
-        min_demand_periods=config.min_demand_periods,
+        min_demand_periods_until_origin=config.min_demand_periods_until_origin,
+        min_train_size=config.min_train_size,
     )
     _print_progress(f"Classified {len(series_metrics):,} eligible series.")
 
@@ -263,11 +267,19 @@ def _parse_args() -> argparse.Namespace:
         "--group-cols", type=_parse_group_cols, default=DEFAULT_GROUP_COLS
     )
     parser.add_argument(
-        "--min-demand-periods", type=int, default=DEFAULT_MIN_DEMAND_PERIODS
+        "--min-demand-periods-until-origin",
+        "--min-demand-periods",
+        dest="min_demand_periods_until_origin",
+        type=int,
+        default=MIN_DEMAND_PERIODS_UNTIL_ORIGIN,
+        help=(
+            "Minimum positive-demand periods required in the initial training "
+            "window before the first sliding-window forecast."
+        ),
     )
     parser.add_argument(
         "--min-demand-weeks",
-        dest="min_demand_periods",
+        dest="min_demand_periods_until_origin",
         type=int,
         help=argparse.SUPPRESS,
     )
@@ -343,7 +355,7 @@ def main() -> None:
         output_dir=args.output_dir,
         demand_col=args.demand_col,
         group_cols=args.group_cols,
-        min_demand_periods=args.min_demand_periods,
+        min_demand_periods_until_origin=args.min_demand_periods_until_origin,
         min_train_size=args.min_train_size,
         forecast_periods=args.forecast_periods,
         step=args.step,

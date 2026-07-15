@@ -25,18 +25,20 @@ DEFAULT_DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 
 # Choose the aggregation horizon used by model selection.
 # Valid values: "daily", "weekly", "monthly".
-HORIZON = "weekly"
+HORIZON = "daily"
 
 # How many future periods each window predicts (1 day, 1 week, 1 month etc.)
-FORECAST_PERIODS = 1
+FORECAST_PERIODS = 7
+
 
 # How far rolling origin moves between windows.
 # Use 1 for overlapping daily 7-day forecasts; use DEFAULT_FORECAST_PERIODS for
 # non-overlapping windows.
-DEFAULT_STEP = 1
+DEFAULT_STEP = 7
 
-# Number of periods with positive demand (used for ADI/CV2 clustering)
-DEFAULT_MIN_DEMAND_PERIODS = 10
+# Number of positive-demand periods required in the initial training window,
+# before the first sliding-window forecast origin.
+MIN_DEMAND_PERIODS_UNTIL_ORIGIN = 10
 
 # Number of available active periods overall (not necessarily with + demand)
 # Used for fitting the models
@@ -130,7 +132,7 @@ class SelectionConfig:
     demand_col: str = DEFAULT_DEMAND_COL
     group_cols: tuple[str, ...] = DEFAULT_GROUP_COLS
 
-    min_demand_periods: int = DEFAULT_MIN_DEMAND_PERIODS
+    min_demand_periods_until_origin: int = MIN_DEMAND_PERIODS_UNTIL_ORIGIN
     min_train_size: int = DEFAULT_MIN_TRAIN_SIZE
     forecast_periods: int = DEFAULT_FORECAST_PERIODS
     step: int = DEFAULT_STEP
@@ -142,6 +144,11 @@ class SelectionConfig:
 
     def __post_init__(self) -> None:
         horizon = normalize_horizon(self.horizon)
+        min_demand_periods_until_origin = _positive_int(
+            self.min_demand_periods_until_origin,
+            "min_demand_periods_until_origin",
+        )
+        min_train_size = _positive_int(self.min_train_size, "min_train_size")
         forecast_periods = _positive_int(self.forecast_periods, "forecast_periods")
         step = forecast_periods if self.step is None else _positive_int(
             self.step, "step"
@@ -158,6 +165,12 @@ class SelectionConfig:
         )
 
         object.__setattr__(self, "horizon", horizon)
+        object.__setattr__(
+            self,
+            "min_demand_periods_until_origin",
+            min_demand_periods_until_origin,
+        )
+        object.__setattr__(self, "min_train_size", min_train_size)
         object.__setattr__(self, "forecast_periods", forecast_periods)
         object.__setattr__(self, "step", step)
         object.__setattr__(self, "data_dir", data_dir)
