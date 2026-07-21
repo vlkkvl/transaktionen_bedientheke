@@ -3,10 +3,9 @@
 The input is the pooled active-day dataset after delivery-block periods have
 been flagged by ``flag_blocked_periods.py``. Every series is evaluated,
 regardless of its ``is_fcm`` or ``is_pseudo`` value. A series is kept only when
-positive demand occurs on at least ``MIN_DEMAND_SHARE_OVERALL`` of its observed
-active days and its current gap since the last sale is not larger than a factor
-times its own mean historical gap between sales. Independently, a series is
-removed when its current gap exceeds ``DEFAULT_MAX_CURRENT_GAP_DAYS``.
+its current gap since the last sale is not larger than a factor times its own
+mean historical gap between sales. Independently, a series is removed when its
+current gap exceeds ``DEFAULT_MAX_CURRENT_GAP_DAYS``.
 """
 from __future__ import annotations
 
@@ -23,10 +22,8 @@ if __package__ in {None, ""}:
 from src.data.common import ROOT, clear_parquet_outputs, sql_literal, step
 
 
-IN_DIR = ROOT / "data" / "interim" / "transactions_dst_over_days_blocked"
+IN_DIR = ROOT / "data" / "interim" / "transactions_dst_over_days"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_tail"
-
-MIN_DEMAND_SHARE_OVERALL = 0.10
 
 DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 GROUP_COLS = ["ARTIKEL_ID", "MARKT_ID"]
@@ -95,13 +92,10 @@ def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
 def create_series_tables(
     con: duckdb.DuckDBPyConnection,
     *,
-    min_demand_share: float,
     gap_factor: float,
     max_current_gap_days: int,
 ) -> None:
     """Create tables with eligible, removed, and kept series."""
-    if not 0.0 <= min_demand_share <= 1.0:
-        raise ValueError("min_demand_share must be between 0 and 1")
     if gap_factor <= 0:
         raise ValueError("gap_factor must be greater than 0")
     if max_current_gap_days < 0:
@@ -141,11 +135,10 @@ def create_series_tables(
         """
     )
     con.execute(
-        f"""
+        """
         CREATE OR REPLACE TEMP TABLE eligible_series AS
         SELECT *
         FROM series_metrics
-        WHERE nachfrageanteil >= {float(min_demand_share)}
         """
     )
     con.execute(
@@ -224,6 +217,8 @@ def create_series_tables(
                     THEN 'Infinity'::DOUBLE
                 ELSE 0.0
             END AS luecken_faktor,
+            (g.letzter_verkauf IS NULL)
+                AS entfernen_wegen_keinem_verkauf,
             (g.aktuelle_luecke_tage > {int(max_current_gap_days)})
                 AS entfernen_wegen_aktueller_luecke,
             (
@@ -232,7 +227,8 @@ def create_series_tables(
                     > {float(gap_factor)} * g.mittlere_historische_luecke
             ) AS entfernen_wegen_lueckenfaktor,
             (
-                g.aktuelle_luecke_tage > {int(max_current_gap_days)}
+                g.letzter_verkauf IS NULL
+                OR g.aktuelle_luecke_tage > {int(max_current_gap_days)}
                 OR (
                     g.mittlere_historische_luecke IS NOT NULL
                     AND g.aktuelle_luecke_tage
@@ -312,11 +308,18 @@ def write_outputs(con: duckdb.DuckDBPyConnection, out_dir: Path) -> None:
 
 
 def print_filter_summary(con: duckdb.DuckDBPyConnection) -> None:
-    """Print the series-level effect of the demand-share and no-tail filters."""
+    """Print the series-level effect of the no-tail filters."""
     rows_before = con.execute("SELECT COUNT(*) FROM series_metrics").fetchone()[0]
     eligible = con.execute("SELECT COUNT(*) FROM eligible_series").fetchone()[0]
     removed = con.execute(
         "SELECT COUNT(*) FROM series_gap_filter WHERE entfernen"
+    ).fetchone()[0]
+    removed_without_sales = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM series_gap_filter
+        WHERE entfernen_wegen_keinem_verkauf
+        """
     ).fetchone()[0]
     removed_by_current_gap = con.execute(
         """
@@ -350,8 +353,9 @@ def print_filter_summary(con: duckdb.DuckDBPyConnection) -> None:
         """
     ).fetchone()[0]
     print("\nSeries filter summary")
-    print(f"  before demand-share filter: {rows_before:,}")
-    print(f"  after demand-share filter:  {eligible:,}")
+    print(f"  series evaluated:            {rows_before:,}")
+    print(f"  series entering gap filter:  {eligible:,}")
+    print(f"  removed without any sale:    {removed_without_sales:,}")
     print(f"  removed by current-gap rule: {removed_by_current_gap:,}")
     print(f"  removed by gap-factor rule:  {removed_by_gap_factor:,}")
     print(f"  removed by both rules:       {removed_by_both:,}")
@@ -365,7 +369,6 @@ def main(
     in_dir: Path = IN_DIR,
     out_dir: Path = OUT_DIR,
     *,
-    min_demand_share: float = MIN_DEMAND_SHARE_OVERALL,
     gap_factor: float = DEFAULT_CURRENT_TO_HISTORICAL_GAP_FACTOR,
     max_current_gap_days: int = DEFAULT_MAX_CURRENT_GAP_DAYS,
     threads: int = 8,
@@ -382,7 +385,6 @@ def main(
     t0 = perf_counter()
     print(f"Reading pooled daily active-day data from {input_glob}")
     print(f"Writing pooled no-tail daily data to {out_dir}")
-    print(f"Minimum overall demand share: {min_demand_share:.1%}")
     print(f"Current-to-historical gap factor: {gap_factor:g}")
     print(f"Maximum current gap: {max_current_gap_days} days")
     validate_input_schema(con, input_glob)
@@ -391,7 +393,6 @@ def main(
 
     create_series_tables(
         con,
-        min_demand_share=min_demand_share,
         gap_factor=gap_factor,
         max_current_gap_days=max_current_gap_days,
     )
@@ -406,15 +407,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--in-dir", type=Path, default=IN_DIR)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
-    parser.add_argument(
-        "--min-demand-share",
-        type=float,
-        default=MIN_DEMAND_SHARE_OVERALL,
-        help=(
-            "Minimum share of observed active days with positive demand over "
-            "the complete series before applying the tail filter."
-        ),
-    )
     parser.add_argument(
         "--gap-factor",
         type=float,
@@ -439,7 +431,6 @@ if __name__ == "__main__":
     main(
         in_dir=args.in_dir,
         out_dir=args.out_dir,
-        min_demand_share=args.min_demand_share,
         gap_factor=args.gap_factor,
         max_current_gap_days=args.max_current_gap_days,
         threads=args.threads,

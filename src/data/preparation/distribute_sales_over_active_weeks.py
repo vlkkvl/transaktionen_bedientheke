@@ -1,6 +1,7 @@
 """Aggregate active-day sales to active weeks.
 
-The input is the final daily active-day dataset after tail and outlier removal.
+The input is the final daily active-day dataset after tail, minimum-demand,
+and outlier filtering.
 Because that dataset already contains zero-sale rows for active open days, this
 script keeps active weeks with no sales as zero-demand weekly rows.
 
@@ -24,7 +25,7 @@ if __package__ in {None, ""}:
 from src.data.common import ROOT, sql_literal, step
 
 
-IN_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_tail_no_outliers"
+IN_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_min_demand_no_outliers"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_over_weeks"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]

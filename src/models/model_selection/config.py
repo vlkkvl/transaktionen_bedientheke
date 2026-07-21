@@ -54,7 +54,7 @@ HORIZON_ALIASES = {
     "monthly": "monthly",
 }
 HORIZON_DATA_DIRS = {
-    "daily": ROOT / "data" / "interim" / "transactions_dst_daily_no_tail_no_outliers",
+    "daily": ROOT / "data" / "interim" / "transactions_dst_daily_min_demand_no_outliers",
     "weekly": ROOT / "data" / "interim" / "transactions_dst_over_weeks",
     "monthly": ROOT / "data" / "interim" / "transactions_dst_over_months",
 }
