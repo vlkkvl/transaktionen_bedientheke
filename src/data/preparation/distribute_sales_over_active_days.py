@@ -3,8 +3,11 @@
 The input is daily sales per (ARTIKEL_ID, MARKT_ID, DATE).  For every
 article/store pair, this script creates rows for every open day from its first
 positive sale date through the latest date in the input transaction table.
-Actual sales on non-regular open days are kept, and missing regular open days
-are filled with zero sales and zero flags.
+Missing sales on regular open days are filled with zero sales and zero flags.
+Sundays are included only for the configured Sunday-open stores, and public
+holidays are excluded for every store.
+The pooled ``is_fcm`` and ``is_pseudo`` markers are copied to every generated
+row in their series.
 """
 from __future__ import annotations
 
@@ -22,10 +25,8 @@ if __package__ in {None, ""}:
 from src.data.common import ROOT, sql_literal, step
 
 
-IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_no_outliers"
-OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days"
-FCM_IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg_fcm_no_outliers"
-FCM_OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days_fcm"
+IN_DIR = ROOT / "data" / "interim" / "transactions_daily_agg"
+OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_over_days"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
 DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
@@ -43,7 +44,8 @@ STATIC_COLS = [
     "WGR_ID",
     "N_WARENKLASSE_KBEZ",
 ]
-OUTPUT_COLS = KEY_COLS + SUM_COLS + FLAG_COLS + STATIC_COLS
+TYPE_COLS = ["is_fcm", "is_pseudo"]
+OUTPUT_COLS = KEY_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
 
 SUNDAY_OPEN_MARKT_IDS = (1100084, 1100079)
 HOLIDAY_COUNTRY = "DE"
@@ -87,6 +89,8 @@ def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
             UMS_MENGE,
             ABVERKAUFTE_MENGE_KG,
             UMS_VK_WERT,
+            is_fcm,
+            is_pseudo,
             AKTION_KENNZEICHEN,
             RABATT,
             ARTIKELRABATT,
@@ -131,6 +135,8 @@ def create_series_table(
                 END
             ) AS START_DATE,
             CAST({global_end_date_sql} AS DATE) AS END_DATE,
+            BOOL_OR(is_fcm) AS is_fcm,
+            BOOL_OR(is_pseudo) AS is_pseudo,
             {static_select}
         FROM source
         GROUP BY ARTIKEL_ID, MARKT_ID
@@ -140,7 +146,7 @@ def create_series_table(
 
 
 def output_select_sql(year: int) -> str:
-    """Build the yearly SQL query that fills missing regular open days with zero sales."""
+    """Build the yearly SQL query that fills missing open days with zero sales."""
     sunday_open_ids = ", ".join(str(x) for x in SUNDAY_OPEN_MARKT_IDS)
     static_cols = ",\n            ".join(f"s.{col}" for col in STATIC_COLS)
     return f"""
@@ -151,6 +157,8 @@ def output_select_sql(year: int) -> str:
             COALESCE(src.UMS_MENGE, 0.0)::DOUBLE AS UMS_MENGE,
             COALESCE(src.ABVERKAUFTE_MENGE_KG, 0.0)::DOUBLE AS ABVERKAUFTE_MENGE_KG,
             COALESCE(src.UMS_VK_WERT, 0.0)::DOUBLE AS UMS_VK_WERT,
+            s.is_fcm,
+            s.is_pseudo,
             COALESCE(src.AKTION_KENNZEICHEN, 0)::TINYINT AS AKTION_KENNZEICHEN,
             COALESCE(src.RABATT, 0)::TINYINT AS RABATT,
             COALESCE(src.ARTIKELRABATT, 0)::TINYINT AS ARTIKELRABATT,
@@ -163,13 +171,8 @@ def output_select_sql(year: int) -> str:
             AND src.MARKT_ID = s.MARKT_ID
             AND src.DATE_D = c.DATE_D
         WHERE c.YEAR = {year}
-            AND (
-                src.DATE_D IS NOT NULL
-                OR (
-                    NOT c.IS_HOLIDAY
-                    AND (NOT c.IS_SUNDAY OR s.MARKT_ID IN ({sunday_open_ids}))
-                )
-            )
+            AND NOT c.IS_HOLIDAY
+            AND (NOT c.IS_SUNDAY OR s.MARKT_ID IN ({sunday_open_ids}))
         """
 
 

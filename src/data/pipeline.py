@@ -10,7 +10,7 @@ from time import perf_counter
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.data.common import ROOT, parquet_files
+from src.data.common import ROOT
 from src.data.cleaning import (
     aggregate_daily,
     check_duplicates,
@@ -18,7 +18,6 @@ from src.data.cleaning import (
     filtering,
     remove_outliers,
 )
-from src.data.cleaning.rules import FCM_RULE
 from src.data.cleaning.convert import csv_gzip_to_parquet, csv_to_parquet
 from src.data.preparation import (
     distribute_sales_over_active_days,
@@ -27,7 +26,7 @@ from src.data.preparation import (
     filter_no_late_demand
 )
 
-RAW_TRANSACTIONS_DIR = ROOT / "data" / "raw" / "transactions_5_years"
+RAW_TRANSACTIONS_DIR = ROOT / "data" / "raw" / "transactions"
 YEARLY_PARQUET_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 
 
@@ -106,37 +105,6 @@ def make_raw_conversion_stage(force: bool) -> Callable[[], None]:
     return stage
 
 
-def has_parquet_files(directory: Path) -> bool:
-    return bool(parquet_files(directory))
-
-
-def remove_outliers_stage() -> None:
-    remove_outliers.main()
-    if FCM_RULE and has_parquet_files(remove_outliers.FCM_IN_DIR):
-        remove_outliers.main(
-            in_dir=remove_outliers.FCM_IN_DIR,
-            out_dir=remove_outliers.FCM_OUT_DIR,
-        )
-
-
-def distribute_active_days_stage() -> None:
-    distribute_sales_over_active_days.main()
-    if FCM_RULE and has_parquet_files(distribute_sales_over_active_days.FCM_IN_DIR):
-        distribute_sales_over_active_days.main(
-            in_dir=distribute_sales_over_active_days.FCM_IN_DIR,
-            out_dir=distribute_sales_over_active_days.FCM_OUT_DIR,
-        )
-
-
-def aggregate_active_weeks_stage() -> None:
-    distribute_sales_over_active_weeks.main()
-    if FCM_RULE and has_parquet_files(distribute_sales_over_active_weeks.FCM_IN_DIR):
-        distribute_sales_over_active_weeks.main(
-            in_dir=distribute_sales_over_active_weeks.FCM_IN_DIR,
-            out_dir=distribute_sales_over_active_weeks.FCM_OUT_DIR,
-        )
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -150,19 +118,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     stages: list[tuple[str, Callable[[], None]]] = [
-        (
-            "Raw files to yearly parquet",
-            make_raw_conversion_stage(args.force_csv_conversion),
-        ),
+        # (
+        #     "Raw files to yearly parquet",
+        #     make_raw_conversion_stage(args.force_csv_conversion),
+        # ),
         ("Apply article filter report", filtering.main),
-        ("Filter transactions and define ABVERKAUFTE_MENGE_KG", define_goal_variable.main),
+        (
+            "Filter pooled transactions, tag FCM/pseudo, and define ABVERKAUFTE_MENGE_KG",
+            define_goal_variable.main,
+        ),
         ("Export duplicate diagnostics", check_duplicates.main),
-        ("Aggregate daily transactions (base + FCM materialized)", aggregate_daily.main),
-        ("Remove daily outliers", remove_outliers_stage),
-        ("Distribute sales over active days", distribute_active_days_stage),
-        ("Aggregate active weeks", aggregate_active_weeks_stage),
-        #("Aggregate active months", distribute_sales_over_active_months.main),
-        ("Filter no late demand tails for FCM data", filter_no_late_demand.main)
+        ("Aggregate daily transactions with product-type indicators", aggregate_daily.main),
+        ("Distribute sales over active days", distribute_sales_over_active_days.main),
+        ("Filter no late demand tails", filter_no_late_demand.main),
+        ("Remove daily outliers", remove_outliers.main),
+        # ("Aggregate active weeks", distribute_sales_over_active_weeks.main),
+        # ("Aggregate active months", distribute_sales_over_active_months.main),
     ]
 
     started_at = perf_counter()

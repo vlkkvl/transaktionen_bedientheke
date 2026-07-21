@@ -23,24 +23,15 @@ from src.data.common import (
 )
 from src.data.cleaning.rules import (
     DUPLICATE_KEY_COLS,
-    FCM_RULE,
     duplicate_keys_sql,
 )
 
 IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered"
-BASE_IN_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered_no_fcm"
 DUP_OUT_DIR = ROOT / "data" / "interim" / "transactions_duplicates"
 DUP_OUT_FILE = DUP_OUT_DIR / "duplicates_transactions_5_years.csv"
 
 
-def default_input_dir() -> Path:
-    if FCM_RULE and parquet_files(BASE_IN_DIR):
-        return BASE_IN_DIR
-    return IN_DIR
-
-
-def main() -> None:
-    in_dir = default_input_dir()
+def main(in_dir: Path = IN_DIR) -> None:
     input_glob = in_dir / "transactions_year_*.parquet"
     if not parquet_files(in_dir):
         raise FileNotFoundError(f"No parquet files found in {in_dir}")

@@ -1,4 +1,4 @@
-"""Convert CSV.gz files in data/raw/transactions_5_years to per-year parquet files."""
+"""Convert CSV.gz files in data/raw/transactions to per-year parquet files."""
 from pathlib import Path
 import sys
 
@@ -11,7 +11,7 @@ if __package__ in {None, ""}:
 
 from src.data.common import ROOT, clear_parquet_outputs
 
-RAW_DIR = ROOT / "data" / "raw" / "transactions_5_years"
+RAW_DIR = ROOT / "data" / "raw" / "transactions"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 
 

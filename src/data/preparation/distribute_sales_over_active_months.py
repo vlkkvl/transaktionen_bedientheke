@@ -1,9 +1,8 @@
 """Aggregate active-day sales to active months.
 
-The input is the daily active-day dataset produced by
-``distribute_sales_over_active_days.py``. Because that dataset already contains
-zero-sale rows for active open days, this script keeps active months with no
-sales as zero-demand monthly rows.
+The input is the final daily active-day dataset after tail and outlier removal.
+Because that dataset already contains zero-sale rows for active open days, this
+script keeps active months with no sales as zero-demand monthly rows.
 
 Output ``DATE`` is the first day of the month.
 """
@@ -21,8 +20,8 @@ if __package__ in {None, ""}:
 from src.data.common import ROOT, sql_literal, step
 
 
-IN_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days"
-OUT_DIR = ROOT / "data" / "processed" / "transactions_dst_over_months"
+IN_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_tail_no_outliers"
+OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_over_months"
 
 KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "DATE"]
 SUM_COLS = ["UMS_MENGE", "ABVERKAUFTE_MENGE_KG", "UMS_VK_WERT"]
@@ -39,7 +38,8 @@ STATIC_COLS = [
     "WGR_ID",
     "N_WARENKLASSE_KBEZ",
 ]
-OUTPUT_COLS = KEY_COLS + SUM_COLS + FLAG_COLS + STATIC_COLS
+TYPE_COLS = ["is_fcm", "is_pseudo"]
+OUTPUT_COLS = KEY_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
 
 PERIOD_START_SQL = "date_trunc('month', DATE_D)::DATE"
 
@@ -69,6 +69,8 @@ def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
             UMS_MENGE,
             ABVERKAUFTE_MENGE_KG,
             UMS_VK_WERT,
+            is_fcm,
+            is_pseudo,
             AKTION_KENNZEICHEN,
             RABATT,
             ARTIKELRABATT,
@@ -113,6 +115,8 @@ def output_select_sql(year: int) -> str:
             SUM(COALESCE(UMS_MENGE, 0.0))::DOUBLE AS UMS_MENGE,
             SUM(COALESCE(ABVERKAUFTE_MENGE_KG, 0.0))::DOUBLE AS ABVERKAUFTE_MENGE_KG,
             SUM(COALESCE(UMS_VK_WERT, 0.0))::DOUBLE AS UMS_VK_WERT,
+            BOOL_OR(is_fcm) AS is_fcm,
+            BOOL_OR(is_pseudo) AS is_pseudo,
             MAX(COALESCE(AKTION_KENNZEICHEN, 0))::TINYINT AS AKTION_KENNZEICHEN,
             MAX(COALESCE(RABATT, 0))::TINYINT AS RABATT,
             MAX(COALESCE(ARTIKELRABATT, 0))::TINYINT AS ARTIKELRABATT,

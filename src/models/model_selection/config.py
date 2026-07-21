@@ -54,9 +54,9 @@ HORIZON_ALIASES = {
     "monthly": "monthly",
 }
 HORIZON_DATA_DIRS = {
-    "daily": ROOT / "data" / "processed" / "transactions_dst_over_days",
-    "weekly": ROOT / "data" / "processed" / "transactions_dst_over_weeks",
-    "monthly": ROOT / "data" / "processed" / "transactions_dst_over_months",
+    "daily": ROOT / "data" / "interim" / "transactions_dst_daily_no_tail_no_outliers",
+    "weekly": ROOT / "data" / "interim" / "transactions_dst_over_weeks",
+    "monthly": ROOT / "data" / "interim" / "transactions_dst_over_months",
 }
 HORIZON_PERIOD_LABELS = {
     "daily": "day",

@@ -1,4 +1,4 @@
-"""Define the ABVERKAUFTE_MENGE_KG goal variable after transaction filtering."""
+"""Filter pooled transactions, tag FCM rows, and define the goal variable."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,17 +22,19 @@ from src.data.common import (
     step,
 )
 from src.data.cleaning.rules import (
-    FCM_RULE,
     GEWICHT_FLAG_COL,
+    fcm_filter_condition,
     gewicht_flag_expression_sql,
+    pseudo_filter_condition,
     transaction_filter_condition,
 )
 
 IN_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered"
-BASE_OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered_no_fcm"
 
 TARGET_COL = "ABVERKAUFTE_MENGE_KG"
+FCM_COL = "is_fcm"
+PSEUDO_COL = "is_pseudo"
 GEWICHT_FLAG = GEWICHT_FLAG_COL
 GEWICHTSARTIKEL = "GEWICHTSARTIKEL"
 ARTIKEL_INHALT = "ARTIKEL_INHALT"
@@ -75,6 +77,8 @@ def target_expression_sql() -> str:
 
 def output_select_sql(columns: list[str]) -> str:
     target_expr = f"({target_expression_sql()}) AS {ident(TARGET_COL)}"
+    fcm_expr = f"({fcm_filter_condition()})::BOOLEAN AS {ident(FCM_COL)}"
+    pseudo_expr = f"({pseudo_filter_condition()})::BOOLEAN AS {ident(PSEUDO_COL)}"
     weight_flag_expr = (
         f"({gewicht_flag_expression_sql()})::TINYINT AS {ident(GEWICHT_FLAG)}"
     )
@@ -82,23 +86,31 @@ def output_select_sql(columns: list[str]) -> str:
     for col in columns:
         if col == TARGET_COL:
             expressions.append(target_expr)
+        elif col == FCM_COL:
+            expressions.append(fcm_expr)
+        elif col == PSEUDO_COL:
+            expressions.append(pseudo_expr)
         elif col == GEWICHT_FLAG:
             expressions.append(weight_flag_expr)
         else:
             expressions.append(ident(col))
     if TARGET_COL not in columns:
         expressions.append(target_expr)
+    if FCM_COL not in columns:
+        expressions.append(fcm_expr)
+    if PSEUDO_COL not in columns:
+        expressions.append(pseudo_expr)
     if GEWICHT_FLAG not in columns:
         expressions.append(weight_flag_expr)
     return ",\n            ".join(expressions)
 
 
-def filtered_source_expr_sql(read_expr: str, *, include_fcm: bool) -> str:
+def filtered_source_expr_sql(read_expr: str) -> str:
     return f"""
         (
             SELECT *
             FROM {read_expr}
-            WHERE {transaction_filter_condition(include_fcm=include_fcm)}
+            WHERE {transaction_filter_condition(include_fcm=False)}
         )
         """
 
@@ -108,15 +120,13 @@ def write_with_goal_variable(
     input_path: Path,
     output_path: Path,
     columns: list[str],
-    *,
-    include_fcm: bool,
 ) -> tuple[int, int]:
     out_path = temp_output_path(output_path)
     if out_path.exists():
         out_path.unlink()
 
     read_expr = read_parquet_expr(input_path)
-    filtered_expr = filtered_source_expr_sql(read_expr, include_fcm=include_fcm)
+    filtered_expr = filtered_source_expr_sql(read_expr)
     rows_in = con.execute(f"SELECT COUNT(*) FROM {read_expr}").fetchone()[0]
     con.execute(
         f"""
@@ -141,7 +151,6 @@ def write_dataset(
     input_files: list[Path],
     out_dir: Path,
     *,
-    include_fcm: bool,
     label: str,
 ) -> None:
     clear_parquet_outputs(out_dir)
@@ -159,7 +168,6 @@ def write_dataset(
             path,
             output_path,
             columns,
-            include_fcm=include_fcm,
         )
         total_in += rows_in
         total_out += rows_out
@@ -174,29 +182,12 @@ def main() -> None:
     con = configure_duckdb()
 
     t0 = perf_counter()
-    if FCM_RULE:
-        write_dataset(
-            con,
-            input_files,
-            BASE_OUT_DIR,
-            include_fcm=False,
-            label="base filtered transactions without FCM",
-        )
-        write_dataset(
-            con,
-            input_files,
-            OUT_DIR,
-            include_fcm=True,
-            label="FCM-filtered transactions",
-        )
-    else:
-        write_dataset(
-            con,
-            input_files,
-            OUT_DIR,
-            include_fcm=False,
-            label="filtered transactions",
-        )
+    write_dataset(
+        con,
+        input_files,
+        OUT_DIR,
+        label="pooled filtered transactions with FCM indicator",
+    )
 
     step(f"Filtered transactions and defined {TARGET_COL}", t0)
 

@@ -1,10 +1,12 @@
-"""Filter daily FCM series whose current no-demand tail is historically unusual.
+"""Filter daily series whose current no-demand tail is historically unusual.
 
-The input is the active-day FCM dataset produced by
-``distribute_sales_over_active_days.py``. A series is kept only when it has at
-least ``MIN_DEMAND_PERIODS_OVERALL`` positive demand days overall and its
-current gap since the last sale is not larger than a factor times its own
-maximum historical gap between sales.
+The input is the pooled active-day dataset produced by
+``distribute_sales_over_active_days.py``. Every series is evaluated, regardless
+of its ``is_fcm`` or ``is_pseudo`` value. A series is kept only when positive
+demand occurs on at least ``MIN_DEMAND_SHARE_OVERALL`` of its observed active
+days and its current gap since the last sale is not larger than a factor times
+its own mean historical gap between sales. Independently, a series is removed
+when its current gap exceeds ``DEFAULT_MAX_CURRENT_GAP_DAYS``.
 """
 from __future__ import annotations
 
@@ -21,10 +23,10 @@ if __package__ in {None, ""}:
 from src.data.common import ROOT, clear_parquet_outputs, sql_literal, step
 
 
-IN_DIR = ROOT / "data" / "processed" / "transactions_dst_over_days_fcm"
-OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_tail_fcm"
+IN_DIR = ROOT / "data" / "interim" / "transactions_dst_over_days"
+OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_tail"
 
-MIN_DEMAND_PERIODS_OVERALL = 10
+MIN_DEMAND_SHARE_OVERALL = 0.10
 
 DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 GROUP_COLS = ["ARTIKEL_ID", "MARKT_ID"]
@@ -43,9 +45,11 @@ STATIC_COLS = [
     "WGR_ID",
     "N_WARENKLASSE_KBEZ",
 ]
-OUTPUT_COLS = KEY_COLS + SUM_COLS + FLAG_COLS + STATIC_COLS
+TYPE_COLS = ["is_fcm", "is_pseudo"]
+OUTPUT_COLS = KEY_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
 
-DEFAULT_CURRENT_TO_HISTORICAL_GAP_FACTOR = 3.75
+DEFAULT_CURRENT_TO_HISTORICAL_GAP_FACTOR = 10.0
+DEFAULT_MAX_CURRENT_GAP_DAYS = 100
 
 
 def validate_input_schema(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
@@ -73,6 +77,8 @@ def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
             UMS_MENGE,
             {DEMAND_COL},
             UMS_VK_WERT,
+            is_fcm,
+            is_pseudo,
             AKTION_KENNZEICHEN,
             RABATT,
             ARTIKELRABATT,
@@ -88,10 +94,18 @@ def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
 def create_series_tables(
     con: duckdb.DuckDBPyConnection,
     *,
-    min_demand_periods: int,
+    min_demand_share: float,
     gap_factor: float,
+    max_current_gap_days: int,
 ) -> None:
     """Create tables with eligible, removed, and kept series."""
+    if not 0.0 <= min_demand_share <= 1.0:
+        raise ValueError("min_demand_share must be between 0 and 1")
+    if gap_factor <= 0:
+        raise ValueError("gap_factor must be greater than 0")
+    if max_current_gap_days < 0:
+        raise ValueError("max_current_gap_days must be at least 0")
+
     global_data_stand = con.execute("SELECT MAX(DATE_D) FROM source").fetchone()[0]
     if global_data_stand is None:
         raise ValueError("Input parquet files do not contain any usable rows")
@@ -114,10 +128,15 @@ def create_series_tables(
                     WHEN COALESCE({DEMAND_COL}, 0.0) > 0 THEN 1
                     ELSE 0
                 END
-            )::BIGINT AS nachfrageperioden
+            )::BIGINT AS nachfrageperioden,
+            SUM(
+                CASE
+                    WHEN COALESCE({DEMAND_COL}, 0.0) > 0 THEN 1
+                    ELSE 0
+                END
+            )::DOUBLE / COUNT(*) AS nachfrageanteil
         FROM source
         GROUP BY ARTIKEL_ID, MARKT_ID
-        HAVING letzter_verkauf IS NOT NULL
         """
     )
     con.execute(
@@ -125,7 +144,7 @@ def create_series_tables(
         CREATE OR REPLACE TEMP TABLE eligible_series AS
         SELECT *
         FROM series_metrics
-        WHERE nachfrageperioden >= {int(min_demand_periods)}
+        WHERE nachfrageanteil >= {float(min_demand_share)}
         """
     )
     con.execute(
@@ -172,7 +191,7 @@ def create_series_tables(
             ARTIKEL_ID,
             MARKT_ID,
             COUNT(*)::BIGINT AS historische_luecken,
-            MAX(historische_luecke_tage)::DOUBLE AS maximale_historische_luecke
+            AVG(historische_luecke_tage)::DOUBLE AS mittlere_historische_luecke
         FROM historical_gaps
         GROUP BY ARTIKEL_ID, MARKT_ID
         """
@@ -180,39 +199,46 @@ def create_series_tables(
     con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE series_gap_filter AS
-        SELECT
-            e.*,
-            date_diff('day', e.letzter_verkauf, DATE {sql_literal(str(global_data_stand))})
-                ::DOUBLE AS aktuelle_luecke_tage,
-            COALESCE(h.historische_luecken, 0)::BIGINT AS historische_luecken,
-            h.maximale_historische_luecke,
-            CASE
-                WHEN h.maximale_historische_luecke > 0
-                    THEN date_diff(
-                        'day',
-                        e.letzter_verkauf,
-                        DATE {sql_literal(str(global_data_stand))}
-                    )::DOUBLE / h.maximale_historische_luecke
-                WHEN date_diff(
-                        'day',
-                        e.letzter_verkauf,
-                        DATE {sql_literal(str(global_data_stand))}
-                    ) > 0
-                    THEN 'Infinity'::DOUBLE
-                ELSE 0.0
-            END AS luecken_faktor,
-            (
+        WITH gap_metrics AS (
+            SELECT
+                e.*,
                 date_diff(
                     'day',
                     e.letzter_verkauf,
                     DATE {sql_literal(str(global_data_stand))}
-                )::DOUBLE
-                > {float(gap_factor)} * COALESCE(h.maximale_historische_luecke, 0.0)
+                )::DOUBLE AS aktuelle_luecke_tage,
+                COALESCE(h.historische_luecken, 0)::BIGINT AS historische_luecken,
+                h.mittlere_historische_luecke
+            FROM eligible_series e
+            LEFT JOIN historical_gap_summary h
+                ON e.ARTIKEL_ID = h.ARTIKEL_ID
+               AND e.MARKT_ID = h.MARKT_ID
+        )
+        SELECT
+            g.*,
+            CASE
+                WHEN g.mittlere_historische_luecke > 0
+                    THEN g.aktuelle_luecke_tage / g.mittlere_historische_luecke
+                WHEN g.aktuelle_luecke_tage > 0
+                    THEN 'Infinity'::DOUBLE
+                ELSE 0.0
+            END AS luecken_faktor,
+            (g.aktuelle_luecke_tage > {int(max_current_gap_days)})
+                AS entfernen_wegen_aktueller_luecke,
+            (
+                g.mittlere_historische_luecke IS NOT NULL
+                AND g.aktuelle_luecke_tage
+                    > {float(gap_factor)} * g.mittlere_historische_luecke
+            ) AS entfernen_wegen_lueckenfaktor,
+            (
+                g.aktuelle_luecke_tage > {int(max_current_gap_days)}
+                OR (
+                    g.mittlere_historische_luecke IS NOT NULL
+                    AND g.aktuelle_luecke_tage
+                        > {float(gap_factor)} * g.mittlere_historische_luecke
+                )
             ) AS entfernen
-        FROM eligible_series e
-        LEFT JOIN historical_gap_summary h
-            ON e.ARTIKEL_ID = h.ARTIKEL_ID
-           AND e.MARKT_ID = h.MARKT_ID
+        FROM gap_metrics g
         """
     )
     con.execute(
@@ -250,6 +276,8 @@ def output_select_sql(year: int) -> str:
             s.UMS_MENGE,
             s.{DEMAND_COL},
             s.UMS_VK_WERT,
+            s.is_fcm,
+            s.is_pseudo,
             s.AKTION_KENNZEICHEN,
             s.RABATT,
             s.ARTIKELRABATT,
@@ -282,11 +310,33 @@ def write_outputs(con: duckdb.DuckDBPyConnection, out_dir: Path) -> None:
 
 
 def print_filter_summary(con: duckdb.DuckDBPyConnection) -> None:
-    """Print the series-level effect of the min-demand and no-tail filters."""
+    """Print the series-level effect of the demand-share and no-tail filters."""
     rows_before = con.execute("SELECT COUNT(*) FROM series_metrics").fetchone()[0]
     eligible = con.execute("SELECT COUNT(*) FROM eligible_series").fetchone()[0]
     removed = con.execute(
         "SELECT COUNT(*) FROM series_gap_filter WHERE entfernen"
+    ).fetchone()[0]
+    removed_by_current_gap = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM series_gap_filter
+        WHERE entfernen_wegen_aktueller_luecke
+        """
+    ).fetchone()[0]
+    removed_by_gap_factor = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM series_gap_filter
+        WHERE entfernen_wegen_lueckenfaktor
+        """
+    ).fetchone()[0]
+    removed_by_both = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM series_gap_filter
+        WHERE entfernen_wegen_aktueller_luecke
+          AND entfernen_wegen_lueckenfaktor
+        """
     ).fetchone()[0]
     kept = con.execute("SELECT COUNT(*) FROM kept_series").fetchone()[0]
     median_factor = con.execute(
@@ -298,10 +348,13 @@ def print_filter_summary(con: duckdb.DuckDBPyConnection) -> None:
         """
     ).fetchone()[0]
     print("\nSeries filter summary")
-    print(f"  before min-demand filter: {rows_before:,}")
-    print(f"  after min-demand filter:  {eligible:,}")
-    print(f"  removed by no-tail rule:  {removed:,}")
-    print(f"  kept for output:          {kept:,}")
+    print(f"  before demand-share filter: {rows_before:,}")
+    print(f"  after demand-share filter:  {eligible:,}")
+    print(f"  removed by current-gap rule: {removed_by_current_gap:,}")
+    print(f"  removed by gap-factor rule:  {removed_by_gap_factor:,}")
+    print(f"  removed by both rules:       {removed_by_both:,}")
+    print(f"  removed by either rule:      {removed:,}")
+    print(f"  kept for output:             {kept:,}")
     if median_factor is not None:
         print(f"  median removed factor:    {median_factor:.2f}")
 
@@ -310,8 +363,9 @@ def main(
     in_dir: Path = IN_DIR,
     out_dir: Path = OUT_DIR,
     *,
-    min_demand_periods: int = MIN_DEMAND_PERIODS_OVERALL,
+    min_demand_share: float = MIN_DEMAND_SHARE_OVERALL,
     gap_factor: float = DEFAULT_CURRENT_TO_HISTORICAL_GAP_FACTOR,
+    max_current_gap_days: int = DEFAULT_MAX_CURRENT_GAP_DAYS,
     threads: int = 8,
 ) -> None:
     files = sorted(in_dir.glob("*.parquet"))
@@ -324,24 +378,26 @@ def main(
     con.execute("SET preserve_insertion_order=false")
 
     t0 = perf_counter()
-    print(f"Reading daily FCM active-day data from {input_glob}")
-    print(f"Writing no-tail daily FCM data to {out_dir}")
-    print(f"Minimum overall demand periods: {min_demand_periods}")
+    print(f"Reading pooled daily active-day data from {input_glob}")
+    print(f"Writing pooled no-tail daily data to {out_dir}")
+    print(f"Minimum overall demand share: {min_demand_share:.1%}")
     print(f"Current-to-historical gap factor: {gap_factor:g}")
+    print(f"Maximum current gap: {max_current_gap_days} days")
     validate_input_schema(con, input_glob)
     create_source_view(con, input_glob)
     t0 = step("Created source view", t0)
 
     create_series_tables(
         con,
-        min_demand_periods=min_demand_periods,
+        min_demand_share=min_demand_share,
         gap_factor=gap_factor,
+        max_current_gap_days=max_current_gap_days,
     )
     t0 = step("Computed series-level no-tail filter", t0)
     print_filter_summary(con)
 
     write_outputs(con, out_dir)
-    step("Wrote no-tail daily FCM outputs", t0)
+    step("Wrote pooled no-tail daily outputs", t0)
 
 
 def parse_args() -> argparse.Namespace:
@@ -349,12 +405,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--in-dir", type=Path, default=IN_DIR)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
     parser.add_argument(
-        "--min-demand-periods",
-        type=int,
-        default=MIN_DEMAND_PERIODS_OVERALL,
+        "--min-demand-share",
+        type=float,
+        default=MIN_DEMAND_SHARE_OVERALL,
         help=(
-            "Minimum positive demand days required over the complete observed "
-            "series before applying the tail filter."
+            "Minimum share of observed active days with positive demand over "
+            "the complete series before applying the tail filter."
         ),
     )
     parser.add_argument(
@@ -363,8 +419,14 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_CURRENT_TO_HISTORICAL_GAP_FACTOR,
         help=(
             "Remove a series when current_gap > gap_factor * "
-            "max_historical_gap for that same series."
+            "mean_historical_gap for that same series."
         ),
+    )
+    parser.add_argument(
+        "--max-current-gap-days",
+        type=int,
+        default=DEFAULT_MAX_CURRENT_GAP_DAYS,
+        help="Remove a series when its current no-demand gap exceeds this limit.",
     )
     parser.add_argument("--threads", type=int, default=8)
     return parser.parse_args()
@@ -375,7 +437,8 @@ if __name__ == "__main__":
     main(
         in_dir=args.in_dir,
         out_dir=args.out_dir,
-        min_demand_periods=args.min_demand_periods,
+        min_demand_share=args.min_demand_share,
         gap_factor=args.gap_factor,
+        max_current_gap_days=args.max_current_gap_days,
         threads=args.threads,
     )
