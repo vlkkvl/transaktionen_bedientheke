@@ -23,6 +23,7 @@ from src.data.preparation import (
     distribute_sales_over_active_days,
     distribute_sales_over_active_months,
     distribute_sales_over_active_weeks,
+    filter_minimum_demand,
     filter_no_late_demand,
     flag_blocked_periods,
 )
@@ -132,8 +133,9 @@ def main() -> None:
         # ("Aggregate daily transactions with product-type indicators", aggregate_daily.main),
         # ("Distribute sales over active days", distribute_sales_over_active_days.main),
         # ("Flag article/mandant delivery-block periods", flag_blocked_periods.main),
-        ("Filter no late demand tails", filter_no_late_demand.main),
-        # ("Remove daily outliers", remove_outliers.main),
+        # ("Filter no late demand tails", filter_no_late_demand.main),
+        ("Filter series below minimum demand evidence", filter_minimum_demand.main),
+        ("Remove daily outliers", remove_outliers.main),
         # ("Aggregate active weeks", distribute_sales_over_active_weeks.main),
         # ("Aggregate active months", distribute_sales_over_active_months.main),
     ]

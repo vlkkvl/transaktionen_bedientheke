@@ -2,16 +2,17 @@
 
 The accompanying EDA shows that a global Tukey deletion rule is not suitable
 for these intermittent, strongly right-skewed demand series. Consequently,
-only the two row keys identified during manual review are removed.
+only the remaining row key identified during manual review is removed when it
+is still present after upstream filtering.
 
 Rabatt is an ex-post clearance signal and is unavailable when the forecast is
 made. To estimate baseline demand without unplanned clearance spikes, positive
-Rabatt observations above the conservative series-specific ``Q3 + 5 * IQR``
-fence are capped at that fence. Ordinary Rabatt observations and all other
+Rabatt observations above the series-specific positive-demand 95th percentile
+are capped at that percentile. Ordinary Rabatt observations and all other
 statistical outliers remain unchanged.
 
-Input:  data/interim/transactions_dst_daily_no_tail/*.parquet
-Output: data/interim/transactions_dst_daily_no_tail_no_outliers/*.parquet
+Input:  data/interim/transactions_dst_daily_min_demand/*.parquet
+Output: data/interim/transactions_dst_daily_min_demand_no_outliers/*.parquet
 """
 from __future__ import annotations
 
@@ -32,16 +33,15 @@ from src.data.common import (
 )
 
 
-IN_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_tail"
-OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_tail_no_outliers"
+IN_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_min_demand"
+OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_min_demand_no_outliers"
 
 DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
-IQR_K = 5.0
+RABATT_CAP_QUANTILE = 0.95
 
 # Exact row keys established by the manual review in
-# notebooks/00_data_cleaning/00_02_outliers_detection_eda.ipynb.
+# notebooks/00_data_cleaning/00_04_outliers_detection_eda.ipynb.
 KNOWN_ERROR_ROWS = (
-    (317047, 1100047, "2023-09-30"),
     (328555, 1100011, "2023-10-09"),
 )
 
@@ -67,7 +67,7 @@ def create_daily_view(con, in_glob: Path) -> None:
 
 
 def create_known_error_table(con) -> None:
-    """Materialize the reviewed composite keys and verify their uniqueness."""
+    """Materialize reviewed keys and reject duplicate matches in current input."""
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE known_error_rows (
@@ -82,6 +82,23 @@ def create_known_error_table(con) -> None:
         KNOWN_ERROR_ROWS,
     )
 
+    duplicate_matches = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM (
+            SELECT e.ARTIKEL_ID, e.MARKT_ID, e.period
+            FROM known_error_rows e
+            JOIN daily_rows d USING (ARTIKEL_ID, MARKT_ID, period)
+            GROUP BY ALL
+            HAVING COUNT(*) > 1
+        )
+        """
+    ).fetchone()[0]
+    if duplicate_matches:
+        raise RuntimeError(
+            "Known-error audit failed: reviewed keys matched duplicate input rows"
+        )
+
     matched_rows = con.execute(
         """
         SELECT COUNT(*)
@@ -89,11 +106,10 @@ def create_known_error_table(con) -> None:
         JOIN known_error_rows e USING (ARTIKEL_ID, MARKT_ID, period)
         """
     ).fetchone()[0]
-    if matched_rows != len(KNOWN_ERROR_ROWS):
-        raise RuntimeError(
-            "Known-error audit failed: expected "
-            f"{len(KNOWN_ERROR_ROWS)} exact rows, found {matched_rows}"
-        )
+    print(
+        "Reviewed probable-error keys present after upstream filtering: "
+        f"{matched_rows:,}/{len(KNOWN_ERROR_ROWS):,}"
+    )
 
 
 def create_outlier_adjustments(con) -> None:
@@ -104,9 +120,8 @@ def create_outlier_adjustments(con) -> None:
         SELECT
             ARTIKEL_ID,
             MARKT_ID,
-            QUANTILE_CONT(demand, 0.25) FILTER (WHERE demand > 0) AS q1,
-            QUANTILE_CONT(demand, 0.75) FILTER (WHERE demand > 0) AS q3,
-            q3 + {IQR_K} * (q3 - q1) AS upper_fence
+            QUANTILE_CONT(demand, {RABATT_CAP_QUANTILE})
+                FILTER (WHERE demand > 0) AS rabatt_cap
         FROM daily_rows
         GROUP BY ARTIKEL_ID, MARKT_ID
         """
@@ -121,16 +136,16 @@ def create_outlier_adjustments(con) -> None:
             CASE
                 WHEN e.ARTIKEL_ID IS NOT NULL THEN 'remove_probable_error'
                 WHEN d.discount_flag = 1
-                 AND d.demand > f.upper_fence
+                 AND d.demand > f.rabatt_cap
                     THEN 'cap_rabatt'
             END AS cleaning_action,
-            f.upper_fence
+            f.rabatt_cap AS cap_value
         FROM daily_rows d
         JOIN series_fences f USING (ARTIKEL_ID, MARKT_ID)
         LEFT JOIN known_error_rows e USING (ARTIKEL_ID, MARKT_ID, period)
         WHERE e.ARTIKEL_ID IS NOT NULL
            OR (d.discount_flag = 1
-               AND d.demand > f.upper_fence)
+               AND d.demand > f.rabatt_cap)
         """
     )
 
@@ -141,7 +156,7 @@ def output_select_sql(path: Path) -> str:
         SELECT t.* REPLACE (
             CASE
                 WHEN a.cleaning_action = 'cap_rabatt'
-                    THEN LEAST(CAST(t.{ident(DEMAND_COL)} AS DOUBLE), a.upper_fence)
+                    THEN LEAST(CAST(t.{ident(DEMAND_COL)} AS DOUBLE), a.cap_value)
                 ELSE t.{ident(DEMAND_COL)}
             END AS {ident(DEMAND_COL)}
         )
@@ -174,7 +189,10 @@ def main(in_dir: Path = IN_DIR, out_dir: Path = OUT_DIR) -> None:
     ).fetchone()
     print(f"Audited probable-error rows to remove: {error_count:,}")
     print(f"Extreme Rabatt rows to cap: {rabatt_count:,}")
-    print(f"Rabatt cap: positive-demand Q3 + {IQR_K:g} * IQR")
+    print(
+        "Rabatt cap: positive-demand "
+        f"{100 * RABATT_CAP_QUANTILE:.0f}th percentile"
+    )
 
     clear_parquet_outputs(out_dir)
     n_in_total = 0
