@@ -1,12 +1,12 @@
 """Filter daily series whose current no-demand tail is historically unusual.
 
-The input is the pooled active-day dataset produced by
-``distribute_sales_over_active_days.py``. Every series is evaluated, regardless
-of its ``is_fcm`` or ``is_pseudo`` value. A series is kept only when positive
-demand occurs on at least ``MIN_DEMAND_SHARE_OVERALL`` of its observed active
-days and its current gap since the last sale is not larger than a factor times
-its own mean historical gap between sales. Independently, a series is removed
-when its current gap exceeds ``DEFAULT_MAX_CURRENT_GAP_DAYS``.
+The input is the pooled active-day dataset after delivery-block periods have
+been flagged by ``flag_blocked_periods.py``. Every series is evaluated,
+regardless of its ``is_fcm`` or ``is_pseudo`` value. A series is kept only when
+positive demand occurs on at least ``MIN_DEMAND_SHARE_OVERALL`` of its observed
+active days and its current gap since the last sale is not larger than a factor
+times its own mean historical gap between sales. Independently, a series is
+removed when its current gap exceeds ``DEFAULT_MAX_CURRENT_GAP_DAYS``.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ if __package__ in {None, ""}:
 from src.data.common import ROOT, clear_parquet_outputs, sql_literal, step
 
 
-IN_DIR = ROOT / "data" / "interim" / "transactions_dst_over_days"
+IN_DIR = ROOT / "data" / "interim" / "transactions_dst_over_days_blocked"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_tail"
 
 MIN_DEMAND_SHARE_OVERALL = 0.10
@@ -32,7 +32,7 @@ DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 GROUP_COLS = ["ARTIKEL_ID", "MARKT_ID"]
 KEY_COLS = [*GROUP_COLS, "DATE"]
 SUM_COLS = ["UMS_MENGE", DEMAND_COL, "UMS_VK_WERT"]
-FLAG_COLS = ["AKTION_KENNZEICHEN", "RABATT", "ARTIKELRABATT"]
+FLAG_COLS = ["AKTION_KENNZEICHEN", "RABATT", "ARTIKELRABATT", "IS_BLOCKED"]
 STATIC_COLS = [
     "ARTIKEL_BEZ",
     "ARTIKEL_INHALT",
@@ -82,6 +82,7 @@ def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
             AKTION_KENNZEICHEN,
             RABATT,
             ARTIKELRABATT,
+            IS_BLOCKED,
             {", ".join(STATIC_COLS)}
         FROM read_parquet({sql_literal(input_glob)})
         WHERE ARTIKEL_ID IS NOT NULL
@@ -281,6 +282,7 @@ def output_select_sql(year: int) -> str:
             s.AKTION_KENNZEICHEN,
             s.RABATT,
             s.ARTIKELRABATT,
+            s.IS_BLOCKED,
             {static_cols}
         FROM source s
         INNER JOIN kept_series k

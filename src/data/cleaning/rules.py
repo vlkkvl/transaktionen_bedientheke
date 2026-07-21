@@ -14,7 +14,6 @@ ARTIKEL_INHALT_COL = "ARTIKEL_INHALT"
 GEWICHT_FLAG_COL = "GEWICHT_FLAG"
 WGR_ID_COL = "WGR_ID"
 
-MANDANT_RULE = True
 FCM_RULE = False
 EXTERNAL_PRODUCT_RULE = True
 WEIGHT_RULE = True
@@ -26,7 +25,7 @@ MIN_TRANSACTION_DATE = "2023-01-01"
 MAX_TRANSACTION_DATE = "2026-12-31"
 WEIGHT_CONTENT_LIKE = "%amm%"
 EXCLUDED_ARTIKEL_BEZ_VALUES = {"alt"}
-ALLOWED_WGR_IDS = {870, 890, 900}
+ALLOWED_WGR_IDS = {890, 900}
 
 # These two products have clear GRAMM_BON unit inconsistencies in 2023--2026.
 # Remove their complete product series instead of trying to repair single rows.
@@ -3620,7 +3619,6 @@ PSEUDO_ARTICLE_IDS = {
     1435848,
 }
 
-ALLOWED_MANDANT_IDS = {110, 130, 135}
 ALLOWED_FCM_ARTICLE_IDS = {
     560039,
     579781,
@@ -3742,10 +3740,6 @@ BINARY_FLAG_COLUMNS = {
 }
 
 
-def allowed_mandant_ids_sql() -> str:
-    return ", ".join(str(mandant_id) for mandant_id in sorted(ALLOWED_MANDANT_IDS))
-
-
 def allowed_fcm_article_ids_sql() -> str:
     return ", ".join(str(article_id) for article_id in sorted(ALLOWED_FCM_ARTICLE_IDS))
 
@@ -3758,13 +3752,6 @@ def excluded_gramm_bon_article_ids_sql() -> str:
     return ", ".join(
         str(article_id) for article_id in sorted(EXCLUDED_GRAMM_BON_ARTICLE_IDS)
     )
-
-
-def mandant_filter_condition(alias: str | None = None) -> str:
-    col = ident(MANDANT_ID_COL)
-    if alias:
-        col = f"{alias}.{col}"
-    return f"{col} IN ({allowed_mandant_ids_sql()})"
 
 
 def fcm_filter_condition(alias: str | None = None) -> str:
@@ -3853,10 +3840,9 @@ def weight_filter_condition(alias: str | None = None) -> str:
 
 def active_rule_flags(
     *, include_fcm: bool | None = None
-) -> tuple[bool, bool, bool, bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool, bool]:
     fcm_rule = bool(FCM_RULE) if include_fcm is None else bool(FCM_RULE and include_fcm)
     return (
-        bool(MANDANT_RULE),
         fcm_rule,
         bool(EXTERNAL_PRODUCT_RULE),
         bool(WEIGHT_RULE),
@@ -3871,7 +3857,6 @@ def transaction_filter_condition(
     include_fcm: bool | None = None,
 ) -> str:
     (
-        mandant_rule,
         fcm_rule,
         external_product_rule,
         weight_rule,
@@ -3881,8 +3866,6 @@ def transaction_filter_condition(
     conditions = [f"({transaction_date_filter_condition(alias)})"]
     conditions.append(f"({ums_menge_filter_condition(alias)})")
     conditions.append(f"({artikel_bez_filter_condition(alias)})")
-    if mandant_rule:
-        conditions.append(f"({mandant_filter_condition(alias)})")
     if fcm_rule:
         conditions.append(f"({fcm_filter_condition(alias)})")
     if external_product_rule:

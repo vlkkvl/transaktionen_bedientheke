@@ -15,7 +15,6 @@ if __package__ in {None, ""}:
 from src.data.common import ROOT, configure_duckdb, read_parquet_expr, step
 from src.data.cleaning.rules import (
     ALLOWED_FCM_ARTICLE_IDS,
-    ALLOWED_MANDANT_IDS,
     ARTICLE_ID_COL,
     ARTIKEL_BEZ_COL,
     DATE_COL,
@@ -25,8 +24,6 @@ from src.data.cleaning.rules import (
     EXTERNAL_PRODUCT_RULE,
     FCM_RULE,
     GRAMM_BON_RULE,
-    MANDANT_RULE,
-    MANDANT_ID_COL,
     MAX_TRANSACTION_DATE,
     MIN_UMS_MENGE,
     MIN_TRANSACTION_DATE,
@@ -40,7 +37,6 @@ from src.data.cleaning.rules import (
     fcm_filter_condition,
     fcm_or_pseudo_filter_condition,
     gramm_bon_filter_condition,
-    mandant_filter_condition,
     transaction_filter_condition,
     transaction_date_filter_condition,
     ums_menge_filter_condition,
@@ -73,11 +69,6 @@ def main() -> None:
     read_expr = read_parquet_expr(IN_GLOB)
 
     print(f"Reading transactions from {IN_DIR}")
-    print(f"MANDANT_RULE: {MANDANT_RULE}")
-    if MANDANT_RULE:
-        print("Allowed MANDANT_ID values:")
-        for mandant_id in sorted(ALLOWED_MANDANT_IDS):
-            print(f"  {mandant_id}")
     print(f"FCM_RULE: {FCM_RULE}")
     if FCM_RULE:
         print(f"Allowed FCM ARTIKEL_ID values: {len(ALLOWED_FCM_ARTICLE_IDS):,}")
@@ -135,31 +126,6 @@ def main() -> None:
     current_count = count_rows(con, read_expr, current_condition)
     artikel_bez_removed = previous_count - current_count
     artikel_bez_remaining = current_count
-
-    mandant_counts = []
-    mandant_removed = None
-    mandant_remaining = None
-    if MANDANT_RULE:
-        previous_condition = current_condition
-        previous_count = current_count
-        mandant_condition = mandant_filter_condition()
-        current_condition = combine_conditions(previous_condition, mandant_condition)
-        current_count = count_rows(con, read_expr, current_condition)
-        mandant_removed = previous_count - current_count
-        mandant_remaining = current_count
-        mandant_counts = con.execute(
-            f"""
-            SELECT {MANDANT_ID_COL}, COUNT(*) AS n
-            FROM {read_expr}
-            WHERE ({previous_condition})
-              AND (
-                  {MANDANT_ID_COL} IS NULL
-                  OR NOT ({mandant_condition})
-              )
-            GROUP BY {MANDANT_ID_COL}
-            ORDER BY {MANDANT_ID_COL} NULLS FIRST
-            """
-        ).fetchall()
 
     fcm_removed = None
     fcm_remaining = None
@@ -289,15 +255,6 @@ def main() -> None:
         f"  {ARTIKEL_BEZ_COL} filter: removed {artikel_bez_removed:,} "
         f"after previous filters, remaining {artikel_bez_remaining:,}"
     )
-    if mandant_removed is None:
-        print("  MANDANT_ID filter: disabled")
-    else:
-        print(
-            f"  MANDANT_ID filter: removed {mandant_removed:,} "
-            f"after previous filters, remaining {mandant_remaining:,}"
-        )
-        for mandant_id, count in mandant_counts:
-            print(f"  MANDANT_ID {mandant_id}: {count:,}")
     if fcm_removed is None:
         print("  FCM filter: disabled")
     else:

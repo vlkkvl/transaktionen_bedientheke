@@ -23,7 +23,8 @@ from src.data.preparation import (
     distribute_sales_over_active_days,
     distribute_sales_over_active_months,
     distribute_sales_over_active_weeks,
-    filter_no_late_demand
+    filter_no_late_demand,
+    flag_blocked_periods,
 )
 
 RAW_TRANSACTIONS_DIR = ROOT / "data" / "raw" / "transactions"
@@ -110,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-csv-conversion",
         action="store_true",
-        help="Rebuild data/interim/transactions_per_year from raw transaction files.",
+        help="Rebuild data/interim/transactions from raw transaction files.",
     )
     return parser.parse_args()
 
@@ -122,16 +123,17 @@ def main() -> None:
         #     "Raw files to yearly parquet",
         #     make_raw_conversion_stage(args.force_csv_conversion),
         # ),
-        ("Apply article filter report", filtering.main),
-        (
-            "Filter pooled transactions, tag FCM/pseudo, and define ABVERKAUFTE_MENGE_KG",
-            define_goal_variable.main,
-        ),
-        ("Export duplicate diagnostics", check_duplicates.main),
-        ("Aggregate daily transactions with product-type indicators", aggregate_daily.main),
-        ("Distribute sales over active days", distribute_sales_over_active_days.main),
+        # ("Apply article filter report", filtering.main),
+        # (
+        #     "Filter pooled transactions, tag FCM/pseudo, and define ABVERKAUFTE_MENGE_KG",
+        #     define_goal_variable.main,
+        # ),
+        # ("Export duplicate diagnostics", check_duplicates.main),
+        # ("Aggregate daily transactions with product-type indicators", aggregate_daily.main),
+        # ("Distribute sales over active days", distribute_sales_over_active_days.main),
+        # ("Flag article/mandant delivery-block periods", flag_blocked_periods.main),
         ("Filter no late demand tails", filter_no_late_demand.main),
-        ("Remove daily outliers", remove_outliers.main),
+        # ("Remove daily outliers", remove_outliers.main),
         # ("Aggregate active weeks", distribute_sales_over_active_weeks.main),
         # ("Aggregate active months", distribute_sales_over_active_months.main),
     ]
