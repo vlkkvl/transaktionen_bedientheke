@@ -1,30 +1,30 @@
-"""Syntetos-Boylan approximation baseline backed by statsforecast."""
+"""Syntetos-Boylan bias adjustment for Croston forecasts."""
 from __future__ import annotations
 
 import numpy as np
-from statsforecast.models import CrostonSBA
 
-from src.models.baseline.base import ArrayLike, ForecastModel
+from src.models.baseline.base import ArrayLike, ForecastModel, validate_alpha
+from src.models.baseline.croston import DEFAULT_CROSTON_ALPHA, croston_level
 
 
 class SBAForecast(ForecastModel):
-    """Bias-corrected Croston forecast using statsforecast's CrostonSBA."""
+    """Croston forecast multiplied by its standard ``1 - alpha / 2`` factor."""
 
     name = "sba"
 
-    def __init__(self) -> None:
-        self.model_: CrostonSBA | None = None
+    def __init__(self, alpha: float = DEFAULT_CROSTON_ALPHA) -> None:
+        self.alpha = validate_alpha(alpha)
+        self.level_: float | None = None
 
     def fit(self, y: ArrayLike) -> "SBAForecast":
         values = self.as_array(y)
         if len(values) == 0:
             raise ValueError("SBAForecast requires at least one observation")
-        self.model_ = CrostonSBA(alias=self.name).fit(values)
+        self.level_ = (1.0 - self.alpha / 2.0) * croston_level(values, self.alpha)
         return self
 
     def predict(self, horizon: int) -> np.ndarray:
         horizon = self.validate_horizon(horizon)
-        if self.model_ is None:
-            raise RuntimeError("SBAForecast must be fit before predict")
-        forecast = self.model_.predict(horizon)["mean"]
-        return self.nonnegative(forecast)
+        if self.level_ is None:
+            raise RuntimeError("fit must be called before predict")
+        return np.full(horizon, self.level_, dtype=np.float64)

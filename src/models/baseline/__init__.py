@@ -1,10 +1,10 @@
-"""Baseline forecasting models."""
-from src.models.baseline.base import ForecastModel
+"""Classical and intermittent forecasting baselines."""
+
+from src.models.baseline.aggregate_then_disaggregate import (
+    AggregateThenDisaggregateForecast,
+)
 from src.models.baseline.croston import CrostonForecast
-from src.models.baseline.damped_trend_ets import DampedTrendETSForecast
-from src.models.baseline.mean_forecast import MeanForecast
-from src.models.baseline.moving_average import MovingAverageForecast
-from src.models.baseline.naive import NaiveForecast
+from src.models.baseline.evaluation import BASELINE_MODEL_LABELS
 from src.models.baseline.sba import SBAForecast
 from src.models.baseline.simple_exponential_smoothing import (
     SimpleExponentialSmoothingForecast,
@@ -12,12 +12,9 @@ from src.models.baseline.simple_exponential_smoothing import (
 from src.models.baseline.tsb import TSBForecast
 
 __all__ = [
-    "ForecastModel",
+    "AggregateThenDisaggregateForecast",
+    "BASELINE_MODEL_LABELS",
     "CrostonForecast",
-    "DampedTrendETSForecast",
-    "MeanForecast",
-    "MovingAverageForecast",
-    "NaiveForecast",
     "SBAForecast",
     "SimpleExponentialSmoothingForecast",
     "TSBForecast",

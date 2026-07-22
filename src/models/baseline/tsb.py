@@ -1,40 +1,53 @@
-"""Teunter-Syntetos-Babai intermittent-demand baseline backed by statsforecast."""
+"""Teunter-Syntetos-Babai intermittent-demand benchmark."""
 from __future__ import annotations
 
 import numpy as np
-from statsforecast.models import TSB
 
-from src.models.baseline.base import ArrayLike, ForecastModel
+from src.models.baseline.base import (
+    ArrayLike,
+    ForecastModel,
+    ses_level,
+    validate_alpha,
+)
+
+
+DEFAULT_TSB_DEMAND_ALPHA = 0.1
+DEFAULT_TSB_PROBABILITY_ALPHA = 0.1
+
+
+def tsb_level(values: np.ndarray, alpha_d: float, alpha_p: float) -> float:
+    """Estimate occurrence probability multiplied by positive-demand size."""
+    positive = values[values > 0]
+    if len(positive) == 0:
+        return 0.0
+    probability = ses_level((values > 0).astype(np.float64), alpha_p)
+    positive_size = ses_level(positive, alpha_d)
+    return max(probability * positive_size, 0.0)
 
 
 class TSBForecast(ForecastModel):
-    """TSB method with separate demand occurrence and size smoothing."""
+    """TSB with separately fixed smoothing for demand size and occurrence."""
 
     name = "tsb"
 
-    def __init__(self, alpha_d: float = 0.1, alpha_p: float = 0.1) -> None:
-        if not 0 < alpha_d <= 1:
-            raise ValueError("alpha_d must be in (0, 1]")
-        if not 0 < alpha_p <= 1:
-            raise ValueError("alpha_p must be in (0, 1]")
-        self.alpha_d = float(alpha_d)
-        self.alpha_p = float(alpha_p)
-        self.model_: TSB | None = None
+    def __init__(
+        self,
+        alpha_d: float = DEFAULT_TSB_DEMAND_ALPHA,
+        alpha_p: float = DEFAULT_TSB_PROBABILITY_ALPHA,
+    ) -> None:
+        self.alpha_d = validate_alpha(alpha_d, "alpha_d")
+        self.alpha_p = validate_alpha(alpha_p, "alpha_p")
+        self.level_: float | None = None
 
     def fit(self, y: ArrayLike) -> "TSBForecast":
         values = self.as_array(y)
         if len(values) == 0:
             raise ValueError("TSBForecast requires at least one observation")
-        self.model_ = TSB(
-            alpha_d=self.alpha_d,
-            alpha_p=self.alpha_p,
-            alias=self.name,
-        ).fit(values)
+        self.level_ = tsb_level(values, self.alpha_d, self.alpha_p)
         return self
 
     def predict(self, horizon: int) -> np.ndarray:
         horizon = self.validate_horizon(horizon)
-        if self.model_ is None:
-            raise RuntimeError("TSBForecast must be fit before predict")
-        forecast = self.model_.predict(horizon)["mean"]
-        return self.nonnegative(forecast)
+        if self.level_ is None:
+            raise RuntimeError("fit must be called before predict")
+        return np.full(horizon, self.level_, dtype=np.float64)
