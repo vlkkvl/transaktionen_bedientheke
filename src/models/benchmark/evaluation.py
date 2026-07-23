@@ -58,6 +58,10 @@ def prepare_daily_rows(
             MARKT_ID,
             CAST(DATE AS DATE) AS period,
             CAST(COALESCE({demand}, 0) AS DOUBLE) AS demand,
+            CASE
+                WHEN COALESCE(AKTION_KENNZEICHEN, 0) = 1 THEN 1
+                ELSE 0
+            END::TINYINT AS action_flag,
             is_fcm,
             is_pseudo,
             WGR_ID::INTEGER AS category_id,
@@ -108,6 +112,7 @@ def prepare_daily_rows(
             MARKT_ID,
             period,
             SUM(demand) AS demand,
+            MAX(action_flag)::TINYINT AS action_flag,
             ANY_VALUE(sourcing_group) AS sourcing_group,
             ANY_VALUE(category_id) AS category_id
         FROM benchmark_source_rows
