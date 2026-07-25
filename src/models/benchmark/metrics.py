@@ -15,7 +15,11 @@ def _ratio(numerator: float, denominator: float) -> float:
 
 
 def _enrich(forecasts: pd.DataFrame) -> pd.DataFrame:
-    enriched = forecasts.copy()
+    enriched = forecasts.loc[
+        forecasts["is_active"].fillna(False)
+        if "is_active" in forecasts
+        else pd.Series(True, index=forecasts.index)
+    ].copy()
     enriched["error"] = enriched["forecast"] - enriched["actual"]
     enriched["abs_error"] = enriched["error"].abs()
     valid_scale = enriched["seasonal_mase_scale"].gt(0)

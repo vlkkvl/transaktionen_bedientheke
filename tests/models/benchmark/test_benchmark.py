@@ -36,6 +36,8 @@ class ForecastEvaluationTest(unittest.TestCase):
                 MARKT_ID BIGINT,
                 period DATE,
                 demand DOUBLE,
+                is_active BOOLEAN,
+                reason_closed VARCHAR,
                 sourcing_group VARCHAR,
                 category_id INTEGER
             )
@@ -43,15 +45,24 @@ class ForecastEvaluationTest(unittest.TestCase):
         )
         dates = pd.date_range("2025-01-01", periods=77, freq="D")
         rows = [
-            (1, 10, date.date(), float(index % 7 == 0), "FCM", 890)
+            (
+                1,
+                10,
+                date.date(),
+                float(index % 7 == 0 and index != 63),
+                index not in {63, 74},
+                "Holiday" if index == 63 else "Sunday" if index == 74 else None,
+                "FCM",
+                890,
+            )
             for index, date in enumerate(dates)
         ]
         con.executemany(
-            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?)", rows
+            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
         )
         create_history_features(con)
         origin = pd.Timestamp("2025-03-12")
-        design = BenchmarkDesign(70, 10, origin, 28, 7)
+        design = BenchmarkDesign(69, 9, origin, 28, 7)
 
         origin_summary = _create_eligible_origins(
             con, pd.DatetimeIndex([origin]), design
@@ -59,13 +70,16 @@ class ForecastEvaluationTest(unittest.TestCase):
         forecasts = _forecast_rows(con, horizon_days=7)
 
         self.assertEqual(int(origin_summary.loc[0, "mature_series"]), 1)
-        self.assertEqual(forecasts["active_days_before_origin"].unique().tolist(), [70])
-        self.assertEqual(forecasts["demand_days_before_origin"].unique().tolist(), [10])
-        self.assertEqual(forecasts["days_since_last_demand"].unique().tolist(), [7])
-        self.assertAlmostEqual(forecasts["recent_occurrence_rate"].iloc[0], 1 / 7)
+        self.assertEqual(forecasts["active_days_before_origin"].unique().tolist(), [69])
+        self.assertEqual(forecasts["demand_days_before_origin"].unique().tolist(), [9])
+        self.assertEqual(forecasts["days_since_last_demand"].unique().tolist(), [14])
+        self.assertAlmostEqual(forecasts["recent_occurrence_rate"].iloc[0], 1 / 9)
         primary = forecasts[forecasts["model"].eq(PRIMARY_MODEL)]
         self.assertEqual(len(primary), 7)
         self.assertEqual(primary.iloc[0]["forecast"], 1.0)
+        closed = primary.loc[~primary["is_active"]].iloc[0]
+        self.assertEqual(closed["reason_closed"], "Sunday")
+        self.assertEqual(closed["forecast"], 0.0)
 
 class BenchmarkMetricsTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -99,6 +113,14 @@ class BenchmarkMetricsTest(unittest.TestCase):
 
         self.assertAlmostEqual(segments.loc["FCM", "pooled_wape"], 0.2)
         self.assertTrue(pd.isna(segments.loc["Pseudo", "pooled_wape"]))
+
+    def test_metric_reducers_exclude_closed_rows_when_flag_is_available(self) -> None:
+        forecasts = self.forecasts.assign(is_active=[True, False])
+
+        summary = summarize_models(forecasts).iloc[0]
+
+        self.assertAlmostEqual(summary["pooled_wape"], 0.2)
+        self.assertEqual(summary["n_forecast_rows"], 1)
 
 
 if __name__ == "__main__":

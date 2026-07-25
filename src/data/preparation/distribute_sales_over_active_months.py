@@ -1,8 +1,8 @@
-"""Aggregate active-day sales to active months.
+"""Aggregate calendar-day sales to active months.
 
-The input is the final daily active-day dataset after tail, minimum-demand,
+The input is the final daily calendar dataset after tail, minimum-demand,
 and outlier filtering.
-Because that dataset already contains zero-sale rows for active open days, this
+Because that dataset contains every calendar date plus an ``is_active`` flag, this
 script keeps active months with no sales as zero-demand monthly rows.
 
 Output ``DATE`` is the first day of the month.
@@ -40,7 +40,8 @@ STATIC_COLS = [
     "N_WARENKLASSE_KBEZ",
 ]
 TYPE_COLS = ["is_fcm", "is_pseudo"]
-OUTPUT_COLS = KEY_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
+CALENDAR_COLS = ["is_active", "reason_closed"]
+INPUT_COLS = KEY_COLS + CALENDAR_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
 
 PERIOD_START_SQL = "date_trunc('month', DATE_D)::DATE"
 
@@ -53,13 +54,13 @@ def validate_input_schema(con: duckdb.DuckDBPyConnection, input_glob: str) -> No
             f"DESCRIBE SELECT * FROM read_parquet({sql_literal(input_glob)})"
         ).fetchall()
     }
-    missing = sorted(set(OUTPUT_COLS) - columns)
+    missing = sorted(set(INPUT_COLS) - columns)
     if missing:
         raise ValueError(f"Input parquet files are missing columns: {missing}")
 
 
 def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
-    """Create a normalized DuckDB view over the daily active-day parquet inputs."""
+    """Create a normalized DuckDB view over the daily calendar parquet inputs."""
     con.execute(
         f"""
         CREATE OR REPLACE TEMP VIEW source AS
@@ -67,6 +68,8 @@ def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
             ARTIKEL_ID,
             MARKT_ID,
             CAST(DATE AS DATE) AS DATE_D,
+            is_active,
+            reason_closed,
             UMS_MENGE,
             ABVERKAUFTE_MENGE_KG,
             UMS_VK_WERT,
@@ -121,6 +124,8 @@ def output_select_sql(year: int) -> str:
             MAX(COALESCE(AKTION_KENNZEICHEN, 0))::TINYINT AS AKTION_KENNZEICHEN,
             MAX(COALESCE(RABATT, 0))::TINYINT AS RABATT,
             MAX(COALESCE(ARTIKELRABATT, 0))::TINYINT AS ARTIKELRABATT,
+            COUNT_IF(is_active)::INTEGER AS active_days_in_month,
+            COUNT_IF(NOT is_active)::INTEGER AS closed_days_in_month,
             {static_select}
         FROM normalized
         GROUP BY ARTIKEL_ID, MARKT_ID, PERIOD_START
@@ -160,7 +165,7 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
 
     t0 = perf_counter()
-    print(f"Reading daily active-day data from {input_glob}")
+    print(f"Reading daily calendar data from {input_glob}")
     validate_input_schema(con, input_glob)
     create_source_view(con, input_glob)
     t0 = step("Created source view", t0)

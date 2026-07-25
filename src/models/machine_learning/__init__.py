@@ -7,9 +7,11 @@ from src.models.machine_learning.lightgbm import (
     FORECAST_ID_COLUMNS,
     LIGHTGBM_MODEL_LABELS,
     MODEL_NAME,
+    NORMALIZED_TARGET_COLUMN,
     TWEEDIE_MODEL_NAME,
     TWO_STAGE_MODEL_NAME,
     TARGET_COLUMN,
+    TARGET_SCALE_COLUMN,
     WEEKLY_MODEL_NAME,
     GlobalLightGBMConfig,
     GlobalLightGBMFrames,
@@ -35,7 +37,9 @@ __all__ = [
     "FEATURE_COLUMNS",
     "FORECAST_ID_COLUMNS",
     "MODEL_NAME",
+    "NORMALIZED_TARGET_COLUMN",
     "TARGET_COLUMN",
+    "TARGET_SCALE_COLUMN",
     "GlobalLightGBMConfig",
     "GlobalLightGBMFrames",
     "GlobalLightGBMModel",
@@ -57,4 +61,3 @@ __all__ = [
     "TWO_STAGE_MODEL_NAME",
     "WEEKLY_MODEL_NAME",
 ]
-

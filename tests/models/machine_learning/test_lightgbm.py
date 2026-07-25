@@ -11,16 +11,17 @@ from src.models.benchmark.evaluation import _create_eligible_origins
 from src.models.benchmark.models import create_history_features
 from src.models.machine_learning import (
     FEATURE_COLUMNS,
+    NORMALIZED_TARGET_COLUMN,
+    TARGET_SCALE_COLUMN,
+    WEEKLY_MODEL_NAME,
     GlobalLightGBMConfig,
     create_feature_tables,
+    fit_all_lightgbm_models,
     make_feature_frame,
     prepare_global_lightgbm_frames,
     run_global_lightgbm,
 )
-from src.models.machine_learning import (
-    WEEKLY_MODEL_NAME,
-    fit_all_lightgbm_models,
-)
+from src.models.machine_learning.lightgbm.gbm_base import BaseLightGBMModel
 
 
 class GlobalLightGBMTest(unittest.TestCase):
@@ -33,6 +34,8 @@ class GlobalLightGBMTest(unittest.TestCase):
                 MARKT_ID BIGINT,
                 period DATE,
                 demand DOUBLE,
+                is_active BOOLEAN,
+                reason_closed VARCHAR,
                 action_flag TINYINT,
                 sourcing_group VARCHAR,
                 category_id INTEGER
@@ -49,6 +52,8 @@ class GlobalLightGBMTest(unittest.TestCase):
                         market,
                         date.date(),
                         float((index + article + market) % 7 == 0) * (article + 1),
+                        True,
+                        None,
                         int(index % 30 == 0 or index == 282),
                         "FCM" if article == 1 else "Pseudo",
                         890 if article == 1 else 900,
@@ -56,7 +61,8 @@ class GlobalLightGBMTest(unittest.TestCase):
                     for index, date in enumerate(dates)
                 )
         self.con.executemany(
-            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?, ?)", rows
+            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
         )
         self.design = BenchmarkDesign(61, 8, pd.Timestamp("2025-01-01"), 28, 7)
         create_history_features(self.con)
@@ -84,6 +90,11 @@ class GlobalLightGBMTest(unittest.TestCase):
         self.assertEqual(first.lag_1, history[-1])
         self.assertEqual(first.lag_7, history[-7])
         self.assertAlmostEqual(first.rolling_28_mean, np.mean(history[-28:]))
+        self.assertAlmostEqual(first[TARGET_SCALE_COLUMN], np.mean(history))
+        self.assertAlmostEqual(
+            first[NORMALIZED_TARGET_COLUMN],
+            first.actual / np.mean(history),
+        )
         self.assertEqual(first.days_since_last_action, 10)
         self.assertEqual(first.actions_last_28d, 1)
         self.assertEqual(frame["action_during_horizon"].unique().tolist(), [1])
@@ -95,6 +106,27 @@ class GlobalLightGBMTest(unittest.TestCase):
         )
         self.assertTrue(frame["mean_action_lift_in_sourcing_group"].notna().all())
         self.assertNotIn("demand_class", frame.columns)
+
+    def test_model_prediction_is_restored_to_each_series_scale(self) -> None:
+        class Booster:
+            best_iteration = 0
+
+            @staticmethod
+            def predict(
+                matrix: pd.DataFrame, *, num_iteration: int | None
+            ) -> np.ndarray:
+                return np.array([0.5, 2.0])
+
+        model = BaseLightGBMModel(
+            booster=Booster(),  # type: ignore[arg-type]
+            category_levels={},
+            feature_columns=(),
+            categorical_features=(),
+            prediction_scale_column=TARGET_SCALE_COLUMN,
+        )
+        frame = pd.DataFrame({TARGET_SCALE_COLUMN: [4.0, 3.0]})
+
+        self.assertTrue(np.array_equal(model.predict(frame), np.array([2.0, 6.0])))
 
     def test_end_to_end_model_returns_nonnegative_matching_rows(self) -> None:
         result = run_global_lightgbm(

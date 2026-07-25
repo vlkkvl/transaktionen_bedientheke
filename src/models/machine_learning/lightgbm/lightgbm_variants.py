@@ -23,6 +23,9 @@ from src.models.machine_learning.lightgbm.lightgbm_features import (
     DIAGNOSTIC_COLUMNS,
     FEATURE_COLUMNS,
     FORECAST_ID_COLUMNS,
+    DEFAULT_FEATURES_PATH,
+    NORMALIZED_TARGET_COLUMN,
+    TARGET_SCALE_COLUMN,
     GlobalLightGBMConfig,
     GlobalLightGBMFrames,
     prepare_global_lightgbm_frames,
@@ -214,7 +217,9 @@ def _daily_forecasts(
 ) -> pd.DataFrame:
     forecasts = frames.evaluation.loc[:, [*FORECAST_ID_COLUMNS, *DIAGNOSTIC_COLUMNS]].copy()
     forecasts["model"] = model_name
-    forecasts["forecast"] = np.maximum(prediction, 0.0)
+    forecasts["forecast"] = np.where(
+        forecasts["is_active"], np.maximum(prediction, 0.0), 0.0
+    )
     return forecasts
 
 
@@ -242,6 +247,7 @@ def _fit_daily_model(
         categorical_features=CATEGORICAL_FEATURES,
         config=config,
         feval=wape_feval,
+        prediction_scale_column=TARGET_SCALE_COLUMN,
     )
 
 
@@ -257,7 +263,10 @@ def _fit_global_lightgbm_origin(
         config,
         objective="regression_l2",
         metric="l2",
-        labels=(frames.training["actual"], frames.validation["actual"]),
+        labels=(
+            frames.training[NORMALIZED_TARGET_COLUMN],
+            frames.validation[NORMALIZED_TARGET_COLUMN],
+        ),
     )
     forecasts = _daily_forecasts(frames, MODEL_NAME, model.predict(frames.evaluation))
     training_summary = pd.DataFrame(
@@ -302,6 +311,8 @@ def run_global_lightgbm(
     connection: duckdb.DuckDBPyConnection | None = None,
     data_dir: Path = DEFAULT_DATA_DIR,
     config: GlobalLightGBMConfig | None = None,
+    feature_dataset_path: Path | str = DEFAULT_FEATURES_PATH,
+    force_feature_recompute: bool = False,
 ) -> GlobalLightGBMResult:
     """Refit the global model at each requested origin and combine forecasts."""
     config = GlobalLightGBMConfig() if config is None else config
@@ -311,6 +322,8 @@ def run_global_lightgbm(
         connection=connection,
         data_dir=data_dir,
         config=config,
+        feature_dataset_path=feature_dataset_path,
+        force_feature_recompute=force_feature_recompute,
     )
     return fit_global_lightgbm_frames(frames, config)
 
@@ -323,7 +336,10 @@ def _fit_tweedie_daily_origin(
     model, history, best_iteration = fit_lightgbm_model(
         training=frames.training,
         validation=frames.validation,
-        labels=(frames.training["actual"], frames.validation["actual"]),
+        labels=(
+            frames.training[NORMALIZED_TARGET_COLUMN],
+            frames.validation[NORMALIZED_TARGET_COLUMN],
+        ),
         evaluation=frames.evaluation,
         params={
             **_base_model_params(config),
@@ -335,6 +351,7 @@ def _fit_tweedie_daily_origin(
         categorical_features=CATEGORICAL_FEATURES,
         config=config,
         feval=wape_feval,
+        prediction_scale_column=TARGET_SCALE_COLUMN,
     )
     summary = pd.DataFrame(
         [
@@ -380,6 +397,7 @@ def _train_daily_stage(
     objective: str,
     metric: str | None = None,
     labels: tuple[pd.Series, pd.Series],
+    restore_target_scale: bool = False,
 ) -> tuple[BaseLightGBMModel, dict[str, dict[str, list[float]]], int]:
     return fit_lightgbm_model(
         training=training,
@@ -394,6 +412,9 @@ def _train_daily_stage(
         feature_columns=FEATURE_COLUMNS,
         categorical_features=CATEGORICAL_FEATURES,
         config=config,
+        prediction_scale_column=(
+            TARGET_SCALE_COLUMN if restore_target_scale else None
+        ),
     )
 
 
@@ -429,7 +450,11 @@ def _fit_two_stage_origin(
         config,
         objective="regression_l1",
         metric="l1",
-        labels=(positive_training["actual"], positive_validation["actual"]),
+        labels=(
+            positive_training[NORMALIZED_TARGET_COLUMN],
+            positive_validation[NORMALIZED_TARGET_COLUMN],
+        ),
+        restore_target_scale=True,
     )
     model = TwoStageLightGBMModel(occurrence=occurrence, quantity=quantity)
     occurrence_prediction, quantity_prediction, prediction = model.predict_components(
@@ -497,12 +522,23 @@ def fit_two_stage(
 def make_weekly_frame(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse daily targets into a single seven-day total."""
     prepared = frame.copy()
+    active_only_signals = (
+        "same_weekday_mean_4",
+        "same_weekday_mean_8",
+        "product_weekday_profile_value",
+        "recent_mean_28_forecast",
+        "same_weekday_ma_4_forecast",
+        "occurrence_positive_quantity_forecast",
+    )
+    prepared.loc[~prepared["is_active"], list(active_only_signals)] = 0.0
     prepared["event_window_day"] = prepared["holiday_event_window"].ne("none").astype(int)
     prepared["abs_days_to_event"] = prepared["days_to_nearest_event"].abs()
     grouped = prepared.groupby(list(WEEK_KEYS), observed=True, sort=False)
     weekly = grouped.agg(
         weekly_actual=("actual", "sum"),
-        target_days=("actual", "size"),
+        normalized_actual=(NORMALIZED_TARGET_COLUMN, "sum"),
+        target_mean=(TARGET_SCALE_COLUMN, "first"),
+        target_days=("is_active", "sum"),
         week_iso_week=("iso_week", "first"),
         week_month=("month", "first"),
         event_window_days=("event_window_day", "sum"),
@@ -555,7 +591,10 @@ def _fit_weekly_booster(
     model, history, best_iteration = fit_lightgbm_model(
         training=training,
         validation=validation,
-        labels=(training["actual"], validation["actual"]),
+        labels=(
+            training[NORMALIZED_TARGET_COLUMN],
+            validation[NORMALIZED_TARGET_COLUMN],
+        ),
         evaluation=evaluation,
         params={
             "learning_rate": 0.05,
@@ -580,6 +619,7 @@ def _fit_weekly_booster(
         categorical_features=WEEKLY_CATEGORICAL_FEATURES,
         config=config,
         feval=wape_feval,
+        prediction_scale_column=TARGET_SCALE_COLUMN,
     )
     return model, history, best_iteration
 
@@ -592,21 +632,25 @@ def _allocate_weekly_forecasts(
     totals = weekly.loc[:, list(WEEK_KEYS)].copy()
     totals["weekly_forecast"] = weekly_prediction
     daily = evaluation.copy()
-    daily["local_allocation_signal"] = daily["same_weekday_mean_8"].fillna(0).clip(lower=0)
+    daily["local_allocation_signal"] = (
+        daily["same_weekday_mean_8"].fillna(0).clip(lower=0)
+        * daily["is_active"].astype(float)
+    )
     daily["product_allocation_signal"] = (
         daily["product_weekday_profile_value"].fillna(0).clip(lower=0)
+        * daily["is_active"].astype(float)
     )
     grouped = daily.groupby(list(WEEK_KEYS), observed=True)
     local_total = grouped["local_allocation_signal"].transform("sum")
     product_total = grouped["product_allocation_signal"].transform("sum")
-    target_days = grouped["actual"].transform("size")
+    target_days = grouped["is_active"].transform("sum")
     daily["weekday_share"] = np.where(
         local_total.gt(0),
         daily["local_allocation_signal"] / local_total,
         np.where(
             product_total.gt(0),
             daily["product_allocation_signal"] / product_total,
-            1.0 / target_days,
+            daily["is_active"].astype(float) / target_days,
         ),
     )
     daily = daily.merge(totals, on=list(WEEK_KEYS), how="left", validate="m:1")

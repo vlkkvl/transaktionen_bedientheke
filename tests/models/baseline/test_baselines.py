@@ -71,6 +71,8 @@ class BaselineEvaluationTest(unittest.TestCase):
                 MARKT_ID BIGINT,
                 period DATE,
                 demand DOUBLE,
+                is_active BOOLEAN,
+                reason_closed VARCHAR,
                 sourcing_group VARCHAR,
                 category_id INTEGER
             )
@@ -78,11 +80,20 @@ class BaselineEvaluationTest(unittest.TestCase):
         )
         dates = pd.date_range("2025-01-01", periods=77, freq="D")
         rows = [
-            (1, 10, date.date(), 1000.0 if index >= 70 else 1.0, "FCM", 890)
+            (
+                1,
+                10,
+                date.date(),
+                1000.0 if index >= 70 else 1.0,
+                True,
+                None,
+                "FCM",
+                890,
+            )
             for index, date in enumerate(dates)
         ]
         self.con.executemany(
-            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?)", rows
+            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
         )
         create_history_features(self.con)
         self.origin = pd.Timestamp("2025-03-12")

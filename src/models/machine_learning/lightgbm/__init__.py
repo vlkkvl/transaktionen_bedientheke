@@ -6,7 +6,9 @@ from src.models.machine_learning.lightgbm.lightgbm_features import (
     DIAGNOSTIC_COLUMNS,
     FEATURE_COLUMNS,
     FORECAST_ID_COLUMNS,
+    NORMALIZED_TARGET_COLUMN,
     TARGET_COLUMN,
+    TARGET_SCALE_COLUMN,
     GlobalLightGBMConfig,
     GlobalLightGBMFrames,
     create_feature_tables,
@@ -36,7 +38,9 @@ __all__ = [
     "DIAGNOSTIC_COLUMNS",
     "FEATURE_COLUMNS",
     "FORECAST_ID_COLUMNS",
+    "NORMALIZED_TARGET_COLUMN",
     "TARGET_COLUMN",
+    "TARGET_SCALE_COLUMN",
     "GlobalLightGBMConfig",
     "GlobalLightGBMFrames",
     "GlobalLightGBMModel",
@@ -58,4 +62,3 @@ __all__ = [
     "TWO_STAGE_MODEL_NAME",
     "WEEKLY_MODEL_NAME",
 ]
-

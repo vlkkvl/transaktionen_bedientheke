@@ -58,6 +58,8 @@ def prepare_daily_rows(
             MARKT_ID,
             CAST(DATE AS DATE) AS period,
             CAST(COALESCE({demand}, 0) AS DOUBLE) AS demand,
+            CAST(is_active AS BOOLEAN) AS is_active,
+            reason_closed,
             CASE
                 WHEN COALESCE(AKTION_KENNZEICHEN, 0) = 1 THEN 1
                 ELSE 0
@@ -89,6 +91,12 @@ def prepare_daily_rows(
             MIN(period) AS first_date,
             MAX(period) AS last_date,
             COUNT_IF(is_fcm AND is_pseudo) AS overlapping_source_rows,
+            COUNT_IF(is_active IS NULL) AS null_active_flags,
+            COUNT_IF(is_active AND reason_closed IS NOT NULL)
+                AS active_rows_with_closure_reason,
+            COUNT_IF(NOT is_active AND reason_closed IS NULL)
+                AS closed_rows_without_reason,
+            COUNT_IF(NOT is_active AND demand <> 0) AS closed_rows_with_demand,
             (SELECT COUNT(*) FROM series_attributes
                 WHERE source_groups > 1) AS changing_source_series,
             (SELECT COUNT(*) FROM series_attributes
@@ -98,6 +106,10 @@ def prepare_daily_rows(
     ).fetchdf()
     failure_cols = [
         "overlapping_source_rows",
+        "null_active_flags",
+        "active_rows_with_closure_reason",
+        "closed_rows_without_reason",
+        "closed_rows_with_demand",
         "changing_source_series",
         "changing_category_series",
     ]
@@ -112,6 +124,11 @@ def prepare_daily_rows(
             MARKT_ID,
             period,
             SUM(demand) AS demand,
+            BOOL_OR(is_active) AS is_active,
+            CASE
+                WHEN BOOL_OR(is_active) THEN NULL
+                ELSE ANY_VALUE(reason_closed)
+            END AS reason_closed,
             MAX(action_flag)::TINYINT AS action_flag,
             ANY_VALUE(sourcing_group) AS sourcing_group,
             ANY_VALUE(category_id) AS category_id
@@ -204,6 +221,8 @@ def _forecast_rows(
                 e.*,
                 t.period,
                 t.demand AS actual,
+                t.is_active,
+                t.reason_closed,
                 EXTRACT(DOW FROM t.period)::INTEGER AS target_weekday
             FROM benchmark_eligible_origins AS e
             INNER JOIN benchmark_daily_rows AS t
@@ -215,7 +234,7 @@ def _forecast_rows(
         with_weekday AS (
             SELECT t.*, w.same_weekday_mean
             FROM targets AS t
-            ASOF LEFT JOIN benchmark_row_features AS w
+            ASOF LEFT JOIN benchmark_weekday_features AS w
                 ON t.ARTIKEL_ID = w.ARTIKEL_ID
                 AND t.MARKT_ID = w.MARKT_ID
                 AND t.target_weekday = w.weekday
@@ -243,11 +262,18 @@ def _forecast_rows(
             days_since_last_demand,
             seasonal_mase_scale,
             actual,
-            recent_mean,
-            COALESCE(same_weekday_mean, recent_mean)
-                AS same_weekday_moving_average,
-            recent_occurrence_rate * COALESCE(positive_quantity_mean, 0)
-                AS occurrence_x_positive_quantity
+            is_active,
+            reason_closed,
+            CASE WHEN is_active THEN recent_mean ELSE 0.0 END AS recent_mean,
+            CASE
+                WHEN is_active THEN COALESCE(same_weekday_mean, recent_mean)
+                ELSE 0.0
+            END AS same_weekday_moving_average,
+            CASE
+                WHEN is_active
+                    THEN recent_occurrence_rate * COALESCE(positive_quantity_mean, 0)
+                ELSE 0.0
+            END AS occurrence_x_positive_quantity
         FROM with_positive_quantity
         ORDER BY origin, ARTIKEL_ID, MARKT_ID, period
         """,
@@ -267,6 +293,8 @@ def _forecast_rows(
         "days_since_last_demand",
         "seasonal_mase_scale",
         "actual",
+        "is_active",
+        "reason_closed",
     ]
     return wide.melt(
         id_vars=id_cols,

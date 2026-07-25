@@ -1,11 +1,12 @@
-"""Expand daily aggregate sales over every active open day.
+"""Expand daily aggregate sales over a complete calendar.
 
 The input is daily sales per (ARTIKEL_ID, MARKT_ID, DATE).  For every
-article/store pair, this script creates rows for every open day from its first
-positive sale date through the latest date in the input transaction table.
-Missing sales on regular open days are filled with zero sales and zero flags.
-Sundays are included only for the configured Sunday-open stores, and public
-holidays are excluded for every store.
+article/store pair, this script creates one row for every calendar date from its
+first positive sale through the latest date in the input transaction table.
+Missing sales are filled with zero sales and zero flags. Sundays and public
+holidays are retained and marked with ``is_active`` and ``reason_closed`` so
+downstream calendar lags remain date-correct while demand analyses can exclude
+days on which a store was closed.
 The pooled ``is_fcm`` and ``is_pseudo`` markers are copied to every generated
 row in their series.
 """
@@ -45,7 +46,9 @@ STATIC_COLS = [
     "N_WARENKLASSE_KBEZ",
 ]
 TYPE_COLS = ["is_fcm", "is_pseudo"]
-OUTPUT_COLS = KEY_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
+CALENDAR_COLS = ["is_active", "reason_closed"]
+OUTPUT_COLS = KEY_COLS + CALENDAR_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
+INPUT_COLS = KEY_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
 
 SUNDAY_OPEN_MARKT_IDS = (1100084, 1100079)
 HOLIDAY_COUNTRY = "DE"
@@ -64,7 +67,7 @@ def create_germany_ni_holidays(years: range):
 
 
 def build_calendar(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-    """Return all dates with flags for regular open-day filtering."""
+    """Return all dates with Sunday and Niedersachsen-holiday flags."""
     all_dates = pd.date_range(start_date, end_date, freq="D")
     years = range(start_date.year, end_date.year + 1)
     holiday_dates = set(create_germany_ni_holidays(years).keys())
@@ -108,7 +111,7 @@ def validate_input_schema(con: duckdb.DuckDBPyConnection, input_glob: str) -> No
             f"DESCRIBE SELECT * FROM read_parquet({sql_literal(input_glob)})"
         ).fetchall()
     }
-    missing = sorted(set(OUTPUT_COLS) - columns)
+    missing = sorted(set(INPUT_COLS) - columns)
     if missing:
         raise ValueError(f"Input parquet files are missing columns: {missing}")
 
@@ -146,7 +149,7 @@ def create_series_table(
 
 
 def output_select_sql(year: int) -> str:
-    """Build the yearly SQL query that fills missing open days with zero sales."""
+    """Build the yearly SQL query that retains every calendar date."""
     sunday_open_ids = ", ".join(str(x) for x in SUNDAY_OPEN_MARKT_IDS)
     static_cols = ",\n            ".join(f"s.{col}" for col in STATIC_COLS)
     return f"""
@@ -154,14 +157,32 @@ def output_select_sql(year: int) -> str:
             s.ARTIKEL_ID,
             s.MARKT_ID,
             strftime(c.DATE_D, '%Y-%m-%d') AS DATE,
-            COALESCE(src.UMS_MENGE, 0.0)::DOUBLE AS UMS_MENGE,
-            COALESCE(src.ABVERKAUFTE_MENGE_KG, 0.0)::DOUBLE AS ABVERKAUFTE_MENGE_KG,
-            COALESCE(src.UMS_VK_WERT, 0.0)::DOUBLE AS UMS_VK_WERT,
+            (
+                NOT c.IS_HOLIDAY
+                AND (NOT c.IS_SUNDAY OR s.MARKT_ID IN ({sunday_open_ids}))
+            ) AS is_active,
+            CASE
+                WHEN c.IS_HOLIDAY THEN 'Holiday'
+                WHEN c.IS_SUNDAY AND s.MARKT_ID NOT IN ({sunday_open_ids})
+                    THEN 'Sunday'
+                ELSE NULL
+            END AS reason_closed,
+            CASE WHEN is_active THEN COALESCE(src.UMS_MENGE, 0.0) ELSE 0.0 END
+                ::DOUBLE AS UMS_MENGE,
+            CASE
+                WHEN is_active THEN COALESCE(src.ABVERKAUFTE_MENGE_KG, 0.0)
+                ELSE 0.0
+            END::DOUBLE AS ABVERKAUFTE_MENGE_KG,
+            CASE WHEN is_active THEN COALESCE(src.UMS_VK_WERT, 0.0) ELSE 0.0 END
+                ::DOUBLE AS UMS_VK_WERT,
             s.is_fcm,
             s.is_pseudo,
-            COALESCE(src.AKTION_KENNZEICHEN, 0)::TINYINT AS AKTION_KENNZEICHEN,
-            COALESCE(src.RABATT, 0)::TINYINT AS RABATT,
-            COALESCE(src.ARTIKELRABATT, 0)::TINYINT AS ARTIKELRABATT,
+            CASE WHEN is_active THEN COALESCE(src.AKTION_KENNZEICHEN, 0) ELSE 0 END
+                ::TINYINT AS AKTION_KENNZEICHEN,
+            CASE WHEN is_active THEN COALESCE(src.RABATT, 0) ELSE 0 END
+                ::TINYINT AS RABATT,
+            CASE WHEN is_active THEN COALESCE(src.ARTIKELRABATT, 0) ELSE 0 END
+                ::TINYINT AS ARTIKELRABATT,
             {static_cols}
         FROM series s
         JOIN calendar c
@@ -171,8 +192,6 @@ def output_select_sql(year: int) -> str:
             AND src.MARKT_ID = s.MARKT_ID
             AND src.DATE_D = c.DATE_D
         WHERE c.YEAR = {year}
-            AND NOT c.IS_HOLIDAY
-            AND (NOT c.IS_SUNDAY OR s.MARKT_ID IN ({sunday_open_ids}))
         """
 
 

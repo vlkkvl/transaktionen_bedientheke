@@ -42,7 +42,9 @@ def _target_rows(
             e.recent_occurrence_rate,
             e.days_since_last_demand,
             e.seasonal_mase_scale,
-            t.demand AS actual
+            t.demand AS actual,
+            t.is_active,
+            t.reason_closed
         FROM benchmark_eligible_origins AS e
         INNER JOIN benchmark_daily_rows AS t
             ON t.ARTIKEL_ID = e.ARTIKEL_ID
@@ -99,6 +101,10 @@ def forecast_scalar_baselines(
                 value_vars=list(SCALAR_MODEL_NAMES),
                 var_name="model",
                 value_name="forecast",
+            ).assign(
+                forecast=lambda frame: frame["forecast"].where(
+                    frame["is_active"], 0.0
+                )
             )
         )
     return pd.concat(outputs, ignore_index=True) if outputs else pd.DataFrame()
@@ -152,6 +158,8 @@ def forecast_aggregate_then_disaggregate(
                 e.*,
                 t.period,
                 t.demand AS actual,
+                t.is_active,
+                t.reason_closed,
                 EXTRACT(DOW FROM t.period)::INTEGER AS target_weekday
             FROM benchmark_eligible_origins AS e
             INNER JOIN benchmark_daily_rows AS t
@@ -174,15 +182,36 @@ def forecast_aggregate_then_disaggregate(
             t.days_since_last_demand,
             t.seasonal_mase_scale,
             t.actual,
+            t.is_active,
+            t.reason_closed,
             'aggregate_then_disaggregate' AS model,
-            GREATEST(
-                0,
-                h.weekly_level * CASE
-                    WHEN h.profile_total > 0
-                    THEN COALESCE(w.weekday_demand, 0) / h.profile_total
-                    ELSE 1.0 / 7.0
-                END
-            ) AS forecast
+            CASE
+                WHEN NOT t.is_active THEN 0.0
+                ELSE GREATEST(
+                    0,
+                    h.weekly_level * COALESCE(
+                        CASE
+                            WHEN h.profile_total > 0 THEN
+                                COALESCE(w.weekday_demand, 0) / NULLIF(
+                                    SUM(
+                                        CASE
+                                            WHEN t.is_active
+                                                THEN COALESCE(w.weekday_demand, 0)
+                                            ELSE 0
+                                        END
+                                    ) OVER (
+                                        PARTITION BY t.origin, t.ARTIKEL_ID,
+                                            t.MARKT_ID
+                                    ),
+                                    0
+                                )
+                        END,
+                        1.0 / COUNT_IF(t.is_active) OVER (
+                            PARTITION BY t.origin, t.ARTIKEL_ID, t.MARKT_ID
+                        )
+                    )
+                )
+            END AS forecast
         FROM targets AS t
         INNER JOIN history AS h
             ON h.origin = t.origin

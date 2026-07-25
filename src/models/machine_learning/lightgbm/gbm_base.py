@@ -20,6 +20,7 @@ class BaseLightGBMModel:
     category_levels: dict[str, list[Any]]
     feature_columns: tuple[str, ...]
     categorical_features: tuple[str, ...]
+    prediction_scale_column: str | None = None
 
     def matrix(self, frame: pd.DataFrame) -> pd.DataFrame:
         missing = sorted(set(self.feature_columns) - set(frame.columns))
@@ -49,6 +50,15 @@ class BaseLightGBMModel:
             num_iteration=num_iteration,
         )
         prediction = np.nan_to_num(prediction, nan=0.0)
+        if self.prediction_scale_column is not None:
+            if self.prediction_scale_column not in frame:
+                raise KeyError(
+                    "Feature frame is missing prediction scale column: "
+                    f"{self.prediction_scale_column}"
+                )
+            prediction = prediction * frame[self.prediction_scale_column].to_numpy(
+                dtype=float
+            )
         return np.maximum(prediction, 0.0) if clip_non_negative else prediction
 
 
@@ -92,7 +102,11 @@ def build_category_levels(
     """Create a stable pandas category level map across all supplied frames."""
     levels: dict[str, list[Any]] = {}
     for column in categorical_features:
-        values = pd.concat([frame[column] for frame in frames], ignore_index=True).drop_duplicates()
+        values = (
+            pd.concat([frame[column] for frame in frames], ignore_index=True)
+            .dropna()
+            .drop_duplicates()
+        )
         levels[column] = values.sort_values().tolist()
     return levels
 
@@ -150,6 +164,7 @@ def fit_lightgbm_model(
     *,
     feval: Feval | None = None,
     model_class: type[BaseLightGBMModel] = BaseLightGBMModel,
+    prediction_scale_column: str | None = None,
 ) -> tuple[BaseLightGBMModel, dict[str, dict[str, list[float]]], int]:
     """Fit a model and refit a final booster on train+validation."""
     levels = build_category_levels(categorical_features, training, validation, evaluation)
@@ -201,6 +216,7 @@ def fit_lightgbm_model(
             levels,
             feature_columns,
             categorical_features,
+            prediction_scale_column,
         ),
         history,
         best_iteration,

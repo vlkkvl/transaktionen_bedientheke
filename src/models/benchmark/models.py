@@ -30,16 +30,18 @@ def create_history_features(con: object) -> None:
             SELECT
                 d.*,
                 EXTRACT(DOW FROM d.period)::INTEGER AS weekday,
-                COUNT(*) OVER series_to_date AS active_days_to_date,
-                COUNT_IF(d.demand > 0) OVER series_to_date AS demand_days_to_date,
-                MAX(CASE WHEN d.demand > 0 THEN d.period END)
+                COUNT_IF(d.is_active) OVER series_to_date AS active_days_to_date,
+                COUNT_IF(d.is_active AND d.demand > 0) OVER series_to_date
+                    AS demand_days_to_date,
+                MAX(CASE WHEN d.is_active AND d.demand > 0 THEN d.period END)
                     OVER series_to_date AS last_positive_period,
-                AVG(d.demand) OVER series_to_date AS store_scale,
+                AVG(d.demand) FILTER (WHERE d.is_active) OVER series_to_date
+                    AS store_scale,
                 AVG(d.demand) OVER recent_rows AS recent_mean,
-                AVG((d.demand > 0)::INTEGER) OVER recent_rows AS occurrence_rate,
-                AVG(d.demand) OVER weekday_rows AS same_weekday_mean,
+                AVG((d.demand > 0)::INTEGER) FILTER (WHERE d.is_active)
+                    OVER recent_rows AS occurrence_rate,
                 CASE
-                    WHEN previous_week.demand IS NOT NULL
+                    WHEN d.is_active AND previous_week.is_active
                     THEN ABS(d.demand - previous_week.demand)
                 END AS seasonal_abs_error
             FROM benchmark_daily_rows AS d
@@ -56,12 +58,6 @@ def create_history_features(con: object) -> None:
                     PARTITION BY d.ARTIKEL_ID, d.MARKT_ID
                     ORDER BY d.period ROWS BETWEEN {RECENT_MEAN_DAYS - 1} PRECEDING
                         AND CURRENT ROW
-                ),
-                weekday_rows AS (
-                    PARTITION BY d.ARTIKEL_ID, d.MARKT_ID,
-                        EXTRACT(DOW FROM d.period)
-                    ORDER BY d.period ROWS BETWEEN {SAME_WEEKDAY_OCCURRENCES - 1}
-                        PRECEDING AND CURRENT ROW
                 )
         )
         SELECT
@@ -79,6 +75,24 @@ def create_history_features(con: object) -> None:
     )
     con.execute(
         f"""
+        CREATE OR REPLACE TEMP TABLE benchmark_weekday_features AS
+        SELECT
+            ARTIKEL_ID,
+            MARKT_ID,
+            period,
+            EXTRACT(DOW FROM period)::INTEGER AS weekday,
+            AVG(demand) OVER weekday_rows AS same_weekday_mean
+        FROM benchmark_daily_rows
+        WHERE is_active
+        WINDOW weekday_rows AS (
+            PARTITION BY ARTIKEL_ID, MARKT_ID, EXTRACT(DOW FROM period)
+            ORDER BY period ROWS BETWEEN {SAME_WEEKDAY_OCCURRENCES - 1}
+                PRECEDING AND CURRENT ROW
+        )
+        """
+    )
+    con.execute(
+        f"""
         CREATE OR REPLACE TEMP TABLE benchmark_positive_features AS
         SELECT
             ARTIKEL_ID,
@@ -90,6 +104,6 @@ def create_history_features(con: object) -> None:
                     PRECEDING AND CURRENT ROW
             ) AS positive_quantity_mean
         FROM benchmark_daily_rows
-        WHERE demand > 0
+        WHERE is_active AND demand > 0
         """
     )

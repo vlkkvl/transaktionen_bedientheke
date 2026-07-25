@@ -11,7 +11,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DESIGN_PATH = ROOT / "reports" / "config" / "forecast_design.json"
 DEFAULT_DATA_DIR = (
-    ROOT / "data" / "interim" / "transactions_dst_daily_min_demand_no_outliers"
+    ROOT / "data" / "processed" / "transactions"
 )
 
 

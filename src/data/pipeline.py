@@ -17,15 +17,15 @@ from src.data.cleaning import (
     define_goal_variable,
     filtering,
     remove_outliers,
+    remove_stale_series,
 )
 from src.data.cleaning.convert import csv_gzip_to_parquet, csv_to_parquet
 from src.data.preparation import (
+    discover_sparse_regions,
     distribute_sales_over_active_days,
     distribute_sales_over_active_months,
     distribute_sales_over_active_weeks,
     filter_minimum_demand,
-    filter_no_late_demand,
-    flag_blocked_periods,
 )
 
 RAW_TRANSACTIONS_DIR = ROOT / "data" / "raw" / "transactions"
@@ -125,17 +125,39 @@ def main() -> None:
         #     make_raw_conversion_stage(args.force_csv_conversion),
         # ),
         # ("Apply article filter report", filtering.main),
-        # (
+        #
+        # (# receives "data" / "interim" / "transactions_per_year", writes "data" / "interim" / "transactions_per_year_filtered"
         #     "Filter pooled transactions, tag FCM/pseudo, and define ABVERKAUFTE_MENGE_KG",
         #     define_goal_variable.main,
         # ),
+        # # receives "data" / "interim" / "transactions_per_year_filtered", writes "data" / "interim" / "transactions_duplicates" (only duplicates)
         # ("Export duplicate diagnostics", check_duplicates.main),
+        #
+        # # receives "data" / "interim" / "transactions_per_year_filtered", writes "data" / "interim" / "transactions_daily_agg"
         # ("Aggregate daily transactions with product-type indicators", aggregate_daily.main),
-        # ("Distribute sales over active days", distribute_sales_over_active_days.main),
-        # ("Flag article/mandant delivery-block periods", flag_blocked_periods.main),
-        # ("Filter no late demand tails", filter_no_late_demand.main),
-        ("Filter series below minimum demand evidence", filter_minimum_demand.main),
+        #
+        # # receives "data" / "interim" / "transactions_daily_agg",  writes "data" / "interim" / "transactions_dst_over_days"
+        # ("Expand sales over the complete calendar", distribute_sales_over_active_days.main),
+        #
+        # # receives "data" / "interim" / "transactions_dst_over_days", writes "data" / "interim" / "transactions_dst_daily_no_outliers"
+        # (
+        #     "Discover and materialize sparse product regions",
+        #     discover_sparse_regions.materialize_sparse_regions,
+        # ),
+        # (
+        #     "Filter products flagged by sparse-region discovery (outliers)",
+        #     discover_sparse_regions.materialize_filtered_transactions,
+        # ),
+        #
+        # # receives "data" / "interim" / "transactions_dst_daily_no_outliers", writes "data" / "interim" / "transactions_dst_daily_no_outliers_no_stale"
+        # (
+        #     "Remove stale product-store series",
+        #     remove_stale_series.main,
+        # ),
+
+        # rececives "data" / "interim" / "transactions_dst_daily_no_outliers_no_stale", writes "data" / "processed" / "transactions"
         ("Remove daily outliers", remove_outliers.main),
+
         # ("Aggregate active weeks", distribute_sales_over_active_weeks.main),
         # ("Aggregate active months", distribute_sales_over_active_months.main),
     ]

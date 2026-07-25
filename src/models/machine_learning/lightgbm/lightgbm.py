@@ -11,7 +11,9 @@ from src.models.machine_learning.lightgbm.lightgbm_features import (
     DIAGNOSTIC_COLUMNS,
     FEATURE_COLUMNS,
     FORECAST_ID_COLUMNS,
+    NORMALIZED_TARGET_COLUMN,
     TARGET_COLUMN,
+    TARGET_SCALE_COLUMN,
     GlobalLightGBMConfig,
     GlobalLightGBMFrames,
     create_feature_tables,
@@ -33,7 +35,9 @@ __all__ = [
     "FEATURE_COLUMNS",
     "FORECAST_ID_COLUMNS",
     "MODEL_NAME",
+    "NORMALIZED_TARGET_COLUMN",
     "TARGET_COLUMN",
+    "TARGET_SCALE_COLUMN",
     "GlobalLightGBMConfig",
     "GlobalLightGBMFrames",
     "GlobalLightGBMModel",
@@ -45,4 +49,3 @@ __all__ = [
     "prepare_global_lightgbm_frames",
     "run_global_lightgbm",
 ]
-

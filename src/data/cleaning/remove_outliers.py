@@ -33,8 +33,8 @@ from src.data.common import (
 )
 
 
-IN_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_min_demand"
-OUT_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_min_demand_no_outliers"
+IN_DIR = ROOT / "data" / "interim" / "transactions_dst_daily_no_outliers_no_stale"
+OUT_DIR = ROOT / "data" / "processed" / "transactions"
 
 DEMAND_COL = "ABVERKAUFTE_MENGE_KG"
 RABATT_CAP_QUANTILE = 0.95
@@ -62,6 +62,7 @@ def create_daily_view(con, in_glob: Path) -> None:
             CAST(COALESCE({ident(DEMAND_COL)}, 0) AS DOUBLE) AS demand,
             CAST(COALESCE(RABATT, 0) AS INTEGER) AS discount_flag
         FROM {read_parquet_expr(in_glob)}
+        WHERE is_active
         """
     )
 
