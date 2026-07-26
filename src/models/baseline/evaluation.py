@@ -40,12 +40,12 @@ def _target_rows(
             e.active_days_before_origin,
             e.demand_days_before_origin,
             e.recent_occurrence_rate,
-            e.days_since_last_demand,
+            e.calendar_days_since_last_demand,
             e.seasonal_mase_scale,
             t.demand AS actual,
             t.is_active,
             t.reason_closed
-        FROM benchmark_eligible_origins AS e
+        FROM benchmark_assessed_origins AS e
         INNER JOIN benchmark_daily_rows AS t
             ON t.ARTIKEL_ID = e.ARTIKEL_ID
             AND t.MARKT_ID = e.MARKT_ID
@@ -64,7 +64,7 @@ def forecast_scalar_baselines(
 ) -> pd.DataFrame:
     """Fit SES and intermittent baselines on histories strictly before each origin."""
     origins = con.execute(
-        "SELECT DISTINCT origin FROM benchmark_eligible_origins ORDER BY origin"
+        "SELECT DISTINCT origin FROM benchmark_assessed_origins ORDER BY origin"
     ).fetchnumpy()["origin"]
     outputs: list[pd.DataFrame] = []
     for origin in origins:
@@ -74,7 +74,7 @@ def forecast_scalar_baselines(
                 e.ARTIKEL_ID,
                 e.MARKT_ID,
                 LIST(d.demand ORDER BY d.period) AS history
-            FROM benchmark_eligible_origins AS e
+            FROM benchmark_assessed_origins AS e
             INNER JOIN benchmark_daily_rows AS d
                 ON d.ARTIKEL_ID = e.ARTIKEL_ID
                 AND d.MARKT_ID = e.MARKT_ID
@@ -130,7 +130,7 @@ def forecast_aggregate_then_disaggregate(
                 SUM(d.demand) FILTER (
                     WHERE d.period >= e.origin - ? * 7 * INTERVAL 1 DAY
                 ) AS profile_total
-            FROM benchmark_eligible_origins AS e
+            FROM benchmark_assessed_origins AS e
             INNER JOIN benchmark_daily_rows AS d
                 ON d.ARTIKEL_ID = e.ARTIKEL_ID
                 AND d.MARKT_ID = e.MARKT_ID
@@ -145,7 +145,7 @@ def forecast_aggregate_then_disaggregate(
                 e.MARKT_ID,
                 EXTRACT(DOW FROM d.period)::INTEGER AS weekday,
                 SUM(d.demand) AS weekday_demand
-            FROM benchmark_eligible_origins AS e
+            FROM benchmark_assessed_origins AS e
             INNER JOIN benchmark_daily_rows AS d
                 ON d.ARTIKEL_ID = e.ARTIKEL_ID
                 AND d.MARKT_ID = e.MARKT_ID
@@ -161,7 +161,7 @@ def forecast_aggregate_then_disaggregate(
                 t.is_active,
                 t.reason_closed,
                 EXTRACT(DOW FROM t.period)::INTEGER AS target_weekday
-            FROM benchmark_eligible_origins AS e
+            FROM benchmark_assessed_origins AS e
             INNER JOIN benchmark_daily_rows AS t
                 ON t.ARTIKEL_ID = e.ARTIKEL_ID
                 AND t.MARKT_ID = e.MARKT_ID
@@ -179,7 +179,7 @@ def forecast_aggregate_then_disaggregate(
             t.active_days_before_origin,
             t.demand_days_before_origin,
             t.recent_occurrence_rate,
-            t.days_since_last_demand,
+            t.calendar_days_since_last_demand,
             t.seasonal_mase_scale,
             t.actual,
             t.is_active,

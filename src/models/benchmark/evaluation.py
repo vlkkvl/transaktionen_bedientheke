@@ -140,7 +140,7 @@ def prepare_daily_rows(
     return audit
 
 
-def _create_eligible_origins(
+def _create_assessed_origins(
     con: duckdb.DuckDBPyConnection,
     origins: pd.DatetimeIndex,
     design: BenchmarkDesign,
@@ -171,7 +171,7 @@ def _create_eligible_origins(
             f.recent_mean,
             f.occurrence_rate AS recent_occurrence_rate,
             DATE_DIFF('day', f.last_positive_period, os.origin)
-                AS days_since_last_demand,
+                AS calendar_days_since_last_demand,
             f.seasonal_abs_error_sum
                 / NULLIF(f.seasonal_pair_count, 0) AS seasonal_mase_scale
         FROM origin_series AS os
@@ -183,27 +183,26 @@ def _create_eligible_origins(
     )
     con.execute(
         """
-        CREATE OR REPLACE TEMP TABLE benchmark_eligible_origins AS
+        CREATE OR REPLACE TEMP TABLE benchmark_assessed_origins AS
         SELECT *
         FROM benchmark_origin_history
         WHERE active_days_before_origin >= ?
-          AND demand_days_before_origin >= ?
         """,
-        [design.min_active_days, design.min_demand_days],
+        [design.min_active_days],
     )
     return con.execute(
         """
         SELECT
             h.origin,
             COUNT_IF(h.active_days_before_origin IS NOT NULL) AS known_series,
-            COUNT(e.ARTIKEL_ID) AS mature_series,
-            COUNT_IF(e.sourcing_group = 'FCM') AS mature_fcm_series,
-            COUNT_IF(e.sourcing_group = 'Pseudo') AS mature_pseudo_series
+            COUNT(a.ARTIKEL_ID) AS assessed_series,
+            COUNT_IF(a.sourcing_group = 'FCM') AS assessed_fcm_series,
+            COUNT_IF(a.sourcing_group = 'Pseudo') AS assessed_pseudo_series
         FROM benchmark_origin_history AS h
-        LEFT JOIN benchmark_eligible_origins AS e
-            ON e.ARTIKEL_ID = h.ARTIKEL_ID
-            AND e.MARKT_ID = h.MARKT_ID
-            AND e.origin = h.origin
+        LEFT JOIN benchmark_assessed_origins AS a
+            ON a.ARTIKEL_ID = h.ARTIKEL_ID
+            AND a.MARKT_ID = h.MARKT_ID
+            AND a.origin = h.origin
         GROUP BY h.origin
         ORDER BY h.origin
         """
@@ -224,7 +223,7 @@ def _forecast_rows(
                 t.is_active,
                 t.reason_closed,
                 EXTRACT(DOW FROM t.period)::INTEGER AS target_weekday
-            FROM benchmark_eligible_origins AS e
+            FROM benchmark_assessed_origins AS e
             INNER JOIN benchmark_daily_rows AS t
                 ON t.ARTIKEL_ID = e.ARTIKEL_ID
                 AND t.MARKT_ID = e.MARKT_ID
@@ -259,7 +258,7 @@ def _forecast_rows(
             active_days_before_origin,
             demand_days_before_origin,
             recent_occurrence_rate,
-            days_since_last_demand,
+            calendar_days_since_last_demand,
             seasonal_mase_scale,
             actual,
             is_active,
@@ -290,7 +289,7 @@ def _forecast_rows(
         "active_days_before_origin",
         "demand_days_before_origin",
         "recent_occurrence_rate",
-        "days_since_last_demand",
+        "calendar_days_since_last_demand",
         "seasonal_mase_scale",
         "actual",
         "is_active",
@@ -305,7 +304,7 @@ def _forecast_rows(
 
 
 def run_benchmark(
-    data_dir: Path = DEFAULT_DATA_DIR,
+    data_dir: Path | None = None,
     design: BenchmarkDesign | None = None,
     demand_col: str = DEFAULT_DEMAND_COL,
     connection: duckdb.DuckDBPyConnection | None = None,
@@ -313,6 +312,7 @@ def run_benchmark(
 ) -> BenchmarkResult:
     """Run configured baselines at every complete forecast origin."""
     design = load_benchmark_design() if design is None else design
+    data_dir = design.data_dir if data_dir is None else Path(data_dir)
     con = duckdb.connect() if connection is None else connection
     con.execute("PRAGMA threads=4")
     audit = prepare_daily_rows(con, data_dir=data_dir, demand_col=demand_col)
@@ -321,7 +321,7 @@ def run_benchmark(
     origins = design.origins_through(last_observed)
     if len(origins) == 0:
         raise RuntimeError("No configured origin has a complete forecast horizon.")
-    origin_summary = _create_eligible_origins(con, origins, design)
+    origin_summary = _create_assessed_origins(con, origins, design)
     forecasts = _forecast_rows(con, design.forecast_horizon_days)
     if include_extended_baselines:
         extended_forecasts = forecast_extended_baselines(

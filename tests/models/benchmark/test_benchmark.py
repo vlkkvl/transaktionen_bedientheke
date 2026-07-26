@@ -7,7 +7,7 @@ import pandas as pd
 
 from src.models.benchmark.config import BenchmarkDesign
 from src.models.benchmark.evaluation import (
-    _create_eligible_origins,
+    _create_assessed_origins,
     _forecast_rows,
 )
 from src.models.benchmark.metrics import segment_wape, summarize_models
@@ -16,17 +16,46 @@ from src.models.benchmark.models import PRIMARY_MODEL, create_history_features
 
 class BenchmarkDesignTest(unittest.TestCase):
     def test_origins_only_include_complete_horizons(self) -> None:
-        design = BenchmarkDesign(61, 10, pd.Timestamp("2025-12-01"), 28, 7)
+        design = BenchmarkDesign(28, pd.Timestamp("2026-03-02"), 7, 7, 20)
 
-        origins = design.origins_through("2026-01-04")
+        origins = design.origins_through("2026-07-21")
 
-        self.assertEqual(
-            list(origins),
-            [pd.Timestamp("2025-12-01"), pd.Timestamp("2025-12-29")],
-        )
+        self.assertEqual(len(origins), 20)
+        self.assertEqual(origins[0], pd.Timestamp("2026-03-02"))
+        self.assertEqual(origins[-1], pd.Timestamp("2026-07-13"))
+        self.assertTrue((origins.weekday == 0).all())
 
 
 class ForecastEvaluationTest(unittest.TestCase):
+    def test_series_with_28_active_days_is_assessed_without_demand(self) -> None:
+        con = duckdb.connect()
+        con.execute(
+            """
+            CREATE TEMP TABLE benchmark_daily_rows (
+                ARTIKEL_ID BIGINT,
+                MARKT_ID BIGINT,
+                period DATE,
+                demand DOUBLE,
+                is_active BOOLEAN,
+                reason_closed VARCHAR,
+                sourcing_group VARCHAR,
+                category_id INTEGER
+            )
+            """
+        )
+        dates = pd.date_range("2025-01-01", periods=35, freq="D")
+        con.executemany(
+            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(1, 10, date.date(), 0.0, True, None, "FCM", 890) for date in dates],
+        )
+        create_history_features(con)
+        origin = pd.Timestamp("2025-01-29")
+        design = BenchmarkDesign(28, origin, 7, 7)
+
+        summary = _create_assessed_origins(con, pd.DatetimeIndex([origin]), design)
+
+        self.assertEqual(int(summary.loc[0, "assessed_series"]), 1)
+
     def test_maturity_and_forecasts_use_only_pre_origin_rows(self) -> None:
         con = duckdb.connect()
         con.execute(
@@ -62,17 +91,19 @@ class ForecastEvaluationTest(unittest.TestCase):
         )
         create_history_features(con)
         origin = pd.Timestamp("2025-03-12")
-        design = BenchmarkDesign(69, 9, origin, 28, 7)
+        design = BenchmarkDesign(69, origin, 28, 7)
 
-        origin_summary = _create_eligible_origins(
+        origin_summary = _create_assessed_origins(
             con, pd.DatetimeIndex([origin]), design
         )
         forecasts = _forecast_rows(con, horizon_days=7)
 
-        self.assertEqual(int(origin_summary.loc[0, "mature_series"]), 1)
+        self.assertEqual(int(origin_summary.loc[0, "assessed_series"]), 1)
         self.assertEqual(forecasts["active_days_before_origin"].unique().tolist(), [69])
         self.assertEqual(forecasts["demand_days_before_origin"].unique().tolist(), [9])
-        self.assertEqual(forecasts["days_since_last_demand"].unique().tolist(), [14])
+        self.assertEqual(
+            forecasts["calendar_days_since_last_demand"].unique().tolist(), [14]
+        )
         self.assertAlmostEqual(forecasts["recent_occurrence_rate"].iloc[0], 1 / 9)
         primary = forecasts[forecasts["model"].eq(PRIMARY_MODEL)]
         self.assertEqual(len(primary), 7)

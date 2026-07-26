@@ -21,7 +21,7 @@ from src.models.baseline.simple_exponential_smoothing import (
 )
 from src.models.baseline.tsb import TSBForecast
 from src.models.benchmark.config import BenchmarkDesign
-from src.models.benchmark.evaluation import _create_eligible_origins
+from src.models.benchmark.evaluation import _create_assessed_origins
 from src.models.benchmark.models import create_history_features
 
 
@@ -97,8 +97,8 @@ class BaselineEvaluationTest(unittest.TestCase):
         )
         create_history_features(self.con)
         self.origin = pd.Timestamp("2025-03-12")
-        design = BenchmarkDesign(61, 10, self.origin, 28, 7)
-        _create_eligible_origins(
+        design = BenchmarkDesign(61, self.origin, 28, 7)
+        _create_assessed_origins(
             self.con, pd.DatetimeIndex([self.origin]), design
         )
 

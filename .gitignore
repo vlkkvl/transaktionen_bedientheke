@@ -229,3 +229,9 @@ raw/
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+
+.DS_Store
+
+.idea/
+
+.tmp/
