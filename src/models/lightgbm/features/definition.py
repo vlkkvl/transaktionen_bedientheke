@@ -1,0 +1,23 @@
+"""Shared LightGBM feature contract, independent of every model definition."""
+
+from src.models.lightgbm.features.builder import (
+    CATEGORICAL_FEATURES,
+    DIAGNOSTIC_COLUMNS,
+    FEATURE_COLUMNS,
+    FEATURE_DESCRIPTIONS,
+    FORECAST_ID_COLUMNS,
+    NORMALIZED_TARGET_COLUMN,
+    TARGET_COLUMN,
+    TARGET_SCALE_COLUMN,
+)
+
+__all__ = [
+    "CATEGORICAL_FEATURES",
+    "DIAGNOSTIC_COLUMNS",
+    "FEATURE_COLUMNS",
+    "FEATURE_DESCRIPTIONS",
+    "FORECAST_ID_COLUMNS",
+    "NORMALIZED_TARGET_COLUMN",
+    "TARGET_COLUMN",
+    "TARGET_SCALE_COLUMN",
+]
