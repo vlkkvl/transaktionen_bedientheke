@@ -94,6 +94,7 @@ class LightGBMVariantResult:
     training_summary: pd.DataFrame
     evaluation_history: dict[str, Any]
     allocation_audit: pd.DataFrame | None = None
+    validation_predictions: pd.DataFrame | None = None
 
 
 def build_category_levels(
@@ -165,7 +166,12 @@ def fit_lightgbm_model(
     feval: Feval | None = None,
     model_class: type[BaseLightGBMModel] = BaseLightGBMModel,
     prediction_scale_column: str | None = None,
-) -> tuple[BaseLightGBMModel, dict[str, dict[str, list[float]]], int]:
+) -> tuple[
+    BaseLightGBMModel,
+    dict[str, dict[str, list[float]]],
+    int,
+    np.ndarray,
+]:
     """Fit a model and refit a final booster on train+validation."""
     levels = build_category_levels(categorical_features, training, validation, evaluation)
     train_x = build_matrix(training, levels, feature_columns, categorical_features)
@@ -197,6 +203,10 @@ def fit_lightgbm_model(
         ],
     )
     best_iteration = int(booster.best_iteration or int(config.num_boost_round))
+    validation_prediction = booster.predict(
+        validation_x,
+        num_iteration=best_iteration,
+    )
 
     all_training = pd.concat([training, validation], ignore_index=True)
     all_labels = pd.concat([labels[0], labels[1]], ignore_index=True)
@@ -220,4 +230,5 @@ def fit_lightgbm_model(
         ),
         history,
         best_iteration,
+        np.asarray(validation_prediction),
     )

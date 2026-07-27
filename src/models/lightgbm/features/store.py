@@ -15,6 +15,7 @@ import pandas as pd
 
 from src.models.benchmark.config import ROOT, BenchmarkDesign
 from src.models.lightgbm.features.builder import (
+    REMOVED_FEATURE_COLUMNS,
     _required_materialized_columns,
     create_feature_tables,
     materialize_features_for_origins,
@@ -23,7 +24,7 @@ from src.models.lightgbm.features.builder import (
 
 FEATURE_SET_NAME = "lightgbm_daily"
 FEATURE_SET_VERSION = "1"
-FEATURE_BUILDER_VERSION = "2026-07-26.1"
+FEATURE_BUILDER_VERSION = "2026-07-27.2"
 DEFAULT_FEATURE_STORE_DIR = ROOT / "data" / "processed" / "model_features"
 
 
@@ -144,6 +145,7 @@ class LightGBMFeatureStore:
         expected = origin.normalize()
         return bool(
             required.issubset(columns)
+            and REMOVED_FEATURE_COLUMNS.isdisjoint(columns)
             and bounds is not None
             and bounds[2] > 0
             and pd.Timestamp(bounds[0]).normalize() == expected
@@ -208,6 +210,11 @@ class LightGBMFeatureStore:
             or not self._partition_valid(con, path, origin)
         ]
         if missing:
+            print(
+                f"[features] Building {len(missing):,} of {len(paths):,} "
+                "required origin partitions...",
+                flush=True,
+            )
             with self._build_lock(directory):
                 # Another process may have completed partitions before the lock was won.
                 if not rebuild:
@@ -218,7 +225,12 @@ class LightGBMFeatureStore:
                     ]
                 if missing:
                     create_feature_tables(con)
-                    for origin, path in missing:
+                    for position, (origin, path) in enumerate(missing, start=1):
+                        print(
+                            f"[features {position}/{len(missing)}] "
+                            f"Materializing origin {origin.date()}...",
+                            flush=True,
+                        )
                         path.parent.mkdir(parents=True, exist_ok=True)
                         materialize_features_for_origins(
                             con,
@@ -241,4 +253,11 @@ class LightGBMFeatureStore:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
+            print(f"[features] Feature cache ready: {directory}", flush=True)
+        else:
+            print(
+                f"[features] Reusing {len(paths):,} cached origin partitions "
+                f"from {directory}",
+                flush=True,
+            )
         return FeatureDataset(directory, manifest_path, paths, fingerprint)

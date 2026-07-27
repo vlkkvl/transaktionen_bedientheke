@@ -9,6 +9,7 @@ import duckdb
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from dateutil.easter import easter
 
 from src.data.preparation.distribute_sales_over_active_days import (
     create_germany_ni_holidays,
@@ -34,6 +35,19 @@ WARENEINGAENGE_FEATURES_PATH = (
 )
 MIN_COMPLETED_GAPS_FOR_P90 = 10
 FEATURE_ORIGIN_BATCH_SIZE = 4
+REMOVED_FEATURE_COLUMNS = frozenset({"lag_364", "lag_371"})
+
+
+def get_last_year_offset(current_date: object) -> int:
+    """Return the Easter-aligned annual-history offset for a target date."""
+    target = pd.Timestamp(current_date).normalize()
+    easter_current = pd.Timestamp(easter(target.year))
+    easter_previous = pd.Timestamp(easter(target.year - 1))
+    easter_window_start = easter_current - pd.Timedelta(days=21)
+    easter_window_end = easter_current + pd.Timedelta(days=64)
+    if easter_window_start <= target <= easter_window_end:
+        return int((easter_current - easter_previous).days)
+    return 364
 
 
 def _normalize_feature_path(path: Path | str) -> Path:
@@ -84,6 +98,7 @@ def materialize_features_for_origins(
         for start in range(0, len(normalized_origins), origin_batch_size):
             batch_origins = normalized_origins[start : start + origin_batch_size]
             batch = make_feature_frame(con, batch_origins, design)
+            batch["reason_closed"] = batch["reason_closed"].astype("string")
             table = pa.Table.from_pandas(batch, preserve_index=False)
             if writer is None:
                 writer = pq.ParquetWriter(
@@ -121,6 +136,12 @@ FEATURE_COLUMNS = (
     "target_weekday",
     "iso_week",
     "month",
+    "closed_days_next_1",
+    "closed_days_next_2",
+    "closed_days_next_3",
+    "closed_days_prev_1",
+    "closed_days_prev_2",
+    "closed_days_prev_3",
     "days_to_nearest_event",
     "holiday_event_window",
     "event_name",
@@ -151,8 +172,6 @@ FEATURE_COLUMNS = (
     "same_weekday_mean_8",
     # Annual demand history
     "has_annual_history",
-    "lag_364",
-    "lag_371",
     "same_weekday_last_year_mean",
     "same_week_last_year_mean",
     "product_cross_store_same_weekday_last_year_mean",
@@ -197,6 +216,30 @@ FEATURE_DESCRIPTIONS = {
     ),
     "iso_week": "ISO calendar-week number extracted from the forecast target date.",
     "month": "Calendar-month number extracted from the forecast target date.",
+    "closed_days_next_1": (
+        "Number of store-closed dates from one day after the target through one day "
+        "after the target."
+    ),
+    "closed_days_next_2": (
+        "Number of store-closed dates from one day after the target through two days "
+        "after the target."
+    ),
+    "closed_days_next_3": (
+        "Number of store-closed dates from one day after the target through three days "
+        "after the target."
+    ),
+    "closed_days_prev_1": (
+        "Number of store-closed dates from one day before the target through the day "
+        "before the target."
+    ),
+    "closed_days_prev_2": (
+        "Number of store-closed dates from two days before the target through the day "
+        "before the target."
+    ),
+    "closed_days_prev_3": (
+        "Number of store-closed dates from three days before the target through the "
+        "day before the target."
+    ),
     "days_to_nearest_event": (
         "Signed calendar-day difference from the target date to the nearest known "
         "Niedersachsen public holiday; positive values are before the holiday."
@@ -293,29 +336,21 @@ FEATURE_DESCRIPTIONS = {
         "weekday and occurring strictly before the origin."
     ),
     "has_annual_history": (
-        "One when the series has an observed calendar row exactly 364 days before the "
-        "target date, otherwise zero."
-    ),
-    "lag_364": (
-        "Series demand on the exact calendar date 364 days, or 52 full weeks, before "
-        "the target date."
-    ),
-    "lag_371": (
-        "Series demand on the exact calendar date 371 days, or 53 full weeks, before "
-        "the target date."
+        "One when the series has an observed calendar row exactly A days before the "
+        "target date, where A aligns Easter periods across years and is 364 otherwise."
     ),
     "same_weekday_last_year_mean": (
-        "Mean available series demand on the five matching weekdays at target minus "
-        "378, 371, 364, 357, and 350 calendar days."
+        "Mean available series demand at target minus A-14, A-7, A, A+7, and "
+        "A+14 days, where A is the Easter-aware annual offset."
     ),
     "same_week_last_year_mean": (
-        "Mean series demand over the Monday-to-Sunday calendar week whose Monday is "
-        "364 days before the Monday of the target week."
+        "Mean series demand over the Monday-to-Sunday calendar week A days before "
+        "the target week, where A is the Easter-aware annual offset."
     ),
     "product_cross_store_same_weekday_last_year_mean": (
-        "For each of the five matching weekdays at target minus 378, 371, 364, 357, "
-        "and 350 days, mean article demand is first calculated across active stores; "
-        "the feature is the mean of those five cross-store values."
+        "For each target-minus offset in A-14, A-7, A, A+7, and A+14 days, mean "
+        "article demand is first calculated across active stores; the feature is the "
+        "mean of those five cross-store values."
     ),
     "same_event_offset_last_year_mean": (
         "The nearest target-date holiday and signed day offset are mapped to the same "
@@ -471,7 +506,10 @@ def _feature_cache_covers(
                 "DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]
             ).fetchall()
         }
-        if not _required_materialized_columns().issubset(columns):
+        if (
+            not _required_materialized_columns().issubset(columns)
+            or not REMOVED_FEATURE_COLUMNS.isdisjoint(columns)
+        ):
             return False
         cached_origins = pd.DatetimeIndex(
             pd.to_datetime(
@@ -643,6 +681,21 @@ def _holiday_calendar(start: object, end: object) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _annual_offset_calendar(start: object, end: object) -> pd.DataFrame:
+    """Build the annual-history offset for every possible target date."""
+    dates = pd.date_range(
+        pd.Timestamp(start).normalize(),
+        pd.Timestamp(end).normalize(),
+        freq="D",
+    )
+    return pd.DataFrame(
+        {
+            "target_period": dates.date,
+            "last_year_offset": [get_last_year_offset(day) for day in dates],
+        }
+    )
+
+
 def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     """Create reusable pre-origin feature tables from ``benchmark_daily_rows``."""
     bounds = con.execute(
@@ -656,25 +709,118 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.execute(
         """
-        CREATE OR REPLACE TEMP TABLE ml_series_annual_features AS
+        CREATE OR REPLACE TEMP TABLE ml_store_closure_features AS
+        WITH store_calendar AS (
+            SELECT
+                MARKT_ID,
+                period,
+                NOT BOOL_OR(is_active) AS is_closed
+            FROM benchmark_daily_rows
+            GROUP BY MARKT_ID, period
+        )
         SELECT
-            ARTIKEL_ID,
-            MARKT_ID,
-            (period + INTERVAL 364 DAY)::DATE AS target_period,
-            demand AS lag_364,
-            LAG(demand) OVER same_weekday_history AS lag_371,
-            AVG(demand) OVER same_weekday_window
-                AS same_weekday_last_year_mean
-        FROM benchmark_daily_rows
-        WINDOW
-            same_weekday_history AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID, EXTRACT(ISODOW FROM period)
-                ORDER BY period
-            ),
-            same_weekday_window AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID, EXTRACT(ISODOW FROM period)
-                ORDER BY period ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING
-            )
+            current_day.MARKT_ID,
+            current_day.period,
+            COALESCE(next_1.is_closed, FALSE)::INTEGER AS closed_days_next_1,
+            (
+                COALESCE(next_1.is_closed, FALSE)::INTEGER
+                + COALESCE(next_2.is_closed, FALSE)::INTEGER
+            ) AS closed_days_next_2,
+            (
+                COALESCE(next_1.is_closed, FALSE)::INTEGER
+                + COALESCE(next_2.is_closed, FALSE)::INTEGER
+                + COALESCE(next_3.is_closed, FALSE)::INTEGER
+            ) AS closed_days_next_3,
+            COALESCE(previous_1.is_closed, FALSE)::INTEGER AS closed_days_prev_1,
+            (
+                COALESCE(previous_1.is_closed, FALSE)::INTEGER
+                + COALESCE(previous_2.is_closed, FALSE)::INTEGER
+            ) AS closed_days_prev_2,
+            (
+                COALESCE(previous_1.is_closed, FALSE)::INTEGER
+                + COALESCE(previous_2.is_closed, FALSE)::INTEGER
+                + COALESCE(previous_3.is_closed, FALSE)::INTEGER
+            ) AS closed_days_prev_3
+        FROM store_calendar AS current_day
+        LEFT JOIN store_calendar AS next_1
+            ON current_day.MARKT_ID = next_1.MARKT_ID
+            AND next_1.period = current_day.period + INTERVAL 1 DAY
+        LEFT JOIN store_calendar AS next_2
+            ON current_day.MARKT_ID = next_2.MARKT_ID
+            AND next_2.period = current_day.period + INTERVAL 2 DAY
+        LEFT JOIN store_calendar AS next_3
+            ON current_day.MARKT_ID = next_3.MARKT_ID
+            AND next_3.period = current_day.period + INTERVAL 3 DAY
+        LEFT JOIN store_calendar AS previous_1
+            ON current_day.MARKT_ID = previous_1.MARKT_ID
+            AND previous_1.period = current_day.period - INTERVAL 1 DAY
+        LEFT JOIN store_calendar AS previous_2
+            ON current_day.MARKT_ID = previous_2.MARKT_ID
+            AND previous_2.period = current_day.period - INTERVAL 2 DAY
+        LEFT JOIN store_calendar AS previous_3
+            ON current_day.MARKT_ID = previous_3.MARKT_ID
+            AND previous_3.period = current_day.period - INTERVAL 3 DAY
+        """
+    )
+    con.register(
+        "ml_annual_offset_frame",
+        _annual_offset_calendar(bounds[0], bounds[1]),
+    )
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE ml_annual_offsets AS "
+        "SELECT * FROM ml_annual_offset_frame"
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE ml_annual_reference_dates AS
+        SELECT
+            offsets.target_period,
+            offsets.last_year_offset,
+            annual_offsets.annual_offset,
+            (
+                offsets.target_period
+                - annual_offsets.annual_offset * INTERVAL 1 DAY
+            )::DATE AS reference_period
+        FROM ml_annual_offsets AS offsets
+        CROSS JOIN (
+            VALUES
+                (offsets.last_year_offset - 14),
+                (offsets.last_year_offset - 7),
+                (offsets.last_year_offset),
+                (offsets.last_year_offset + 7),
+                (offsets.last_year_offset + 14)
+        ) AS annual_offsets(annual_offset)
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE ml_series_annual_features AS
+        WITH annual_references AS (
+            SELECT
+                history.ARTIKEL_ID,
+                history.MARKT_ID,
+                offsets.target_period
+            FROM ml_annual_offsets AS offsets
+            INNER JOIN benchmark_daily_rows AS history
+                ON history.period = offsets.target_period
+                    - offsets.last_year_offset * INTERVAL 1 DAY
+        )
+        SELECT
+            reference.ARTIKEL_ID,
+            reference.MARKT_ID,
+            reference.target_period,
+            AVG(history.demand) AS same_weekday_last_year_mean
+        FROM annual_references AS reference
+        INNER JOIN ml_annual_reference_dates AS candidate
+            ON reference.target_period = candidate.target_period
+        LEFT JOIN benchmark_daily_rows AS history
+            ON reference.ARTIKEL_ID = history.ARTIKEL_ID
+            AND reference.MARKT_ID = history.MARKT_ID
+            AND history.period = candidate.reference_period
+        GROUP BY
+            reference.ARTIKEL_ID,
+            reference.MARKT_ID,
+            reference.target_period
         """
     )
     con.execute(
@@ -683,8 +829,7 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
         SELECT
             ARTIKEL_ID,
             MARKT_ID,
-            (DATE_TRUNC('week', period) + INTERVAL 364 DAY)::DATE
-                AS target_week_start,
+            DATE_TRUNC('week', period)::DATE AS reference_week_start,
             AVG(demand) AS same_week_last_year_mean
         FROM benchmark_daily_rows
         GROUP BY ARTIKEL_ID, MARKT_ID, DATE_TRUNC('week', period)
@@ -722,7 +867,8 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
                     CASE WHEN is_active AND demand > 0 THEN demand * demand ELSE 0 END
                 )
                     OVER lifetime AS positive_square_sum,
-                AVG(demand) FILTER (WHERE is_active) OVER lifetime AS target_mean,
+                AVG(demand) FILTER (WHERE is_active AND demand > 0) OVER lifetime
+                    AS target_mean,
                 MAX(CASE WHEN is_active AND demand > 0 THEN period END) OVER lifetime
                     AS last_positive_period,
                 MAX(CASE WHEN action_flag = 1 THEN period END) OVER lifetime
@@ -948,14 +1094,27 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE ml_product_annual_features AS
+        WITH annual_references AS (
+            SELECT
+                history.ARTIKEL_ID,
+                offsets.target_period
+            FROM ml_annual_offsets AS offsets
+            INNER JOIN ml_product_daily AS history
+                ON history.period = offsets.target_period
+                    - offsets.last_year_offset * INTERVAL 1 DAY
+        )
         SELECT
-            ARTIKEL_ID,
-            (period + INTERVAL 364 DAY)::DATE AS target_period,
-            AVG(cross_store_mean) OVER (
-                PARTITION BY ARTIKEL_ID, EXTRACT(ISODOW FROM period)
-                ORDER BY period ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING
-            ) AS product_cross_store_same_weekday_last_year_mean
-        FROM ml_product_daily
+            reference.ARTIKEL_ID,
+            reference.target_period,
+            AVG(history.cross_store_mean)
+                AS product_cross_store_same_weekday_last_year_mean
+        FROM annual_references AS reference
+        INNER JOIN ml_annual_reference_dates AS candidate
+            ON reference.target_period = candidate.target_period
+        LEFT JOIN ml_product_daily AS history
+            ON reference.ARTIKEL_ID = history.ARTIKEL_ID
+            AND history.period = candidate.reference_period
+        GROUP BY reference.ARTIKEL_ID, reference.target_period
         """
     )
     con.execute(
@@ -1228,6 +1387,12 @@ def make_feature_frame(
                 EXTRACT(ISODOW FROM t.period)::INTEGER AS target_weekday,
                 EXTRACT(WEEK FROM t.period)::INTEGER AS iso_week,
                 EXTRACT(MONTH FROM t.period)::INTEGER AS month,
+                closure.closed_days_next_1,
+                closure.closed_days_next_2,
+                closure.closed_days_next_3,
+                closure.closed_days_prev_1,
+                closure.closed_days_prev_2,
+                closure.closed_days_prev_3,
                 t.action_flag::INTEGER AS action_on_forecast_day,
                 MAX(t.action_flag) OVER (
                     PARTITION BY h.ARTIKEL_ID, h.MARKT_ID, h.origin
@@ -1238,6 +1403,9 @@ def make_feature_frame(
                 AND h.MARKT_ID = t.MARKT_ID
                 AND t.period >= h.origin
                 AND t.period < h.origin + ? * INTERVAL 1 DAY
+            INNER JOIN ml_store_closure_features AS closure
+                ON t.MARKT_ID = closure.MARKT_ID
+                AND t.period = closure.period
             WHERE h.active_days >= ?
         ),
         with_calendar_history AS (
@@ -1259,13 +1427,13 @@ def make_feature_frame(
             SELECT
                 t.*,
                 (a.target_period IS NOT NULL)::INTEGER AS has_annual_history,
-                a.lag_364,
-                a.lag_371,
                 a.same_weekday_last_year_mean,
                 w.same_week_last_year_mean,
                 x.product_cross_store_same_weekday_last_year_mean,
                 e.centered_7_demand_mean AS same_event_offset_last_year_mean
             FROM with_calendar_history AS t
+            INNER JOIN ml_annual_offsets AS annual_offset
+                ON t.period = annual_offset.target_period
             LEFT JOIN ml_series_annual_features AS a
                 ON t.ARTIKEL_ID = a.ARTIKEL_ID
                 AND t.MARKT_ID = a.MARKT_ID
@@ -1273,7 +1441,9 @@ def make_feature_frame(
             LEFT JOIN ml_series_weekly_annual_features AS w
                 ON t.ARTIKEL_ID = w.ARTIKEL_ID
                 AND t.MARKT_ID = w.MARKT_ID
-                AND DATE_TRUNC('week', t.period) = w.target_week_start
+                AND DATE_TRUNC('week', t.period)
+                    - annual_offset.last_year_offset * INTERVAL 1 DAY
+                    = w.reference_week_start
             LEFT JOIN ml_product_annual_features AS x
                 ON t.ARTIKEL_ID = x.ARTIKEL_ID
                 AND t.period = x.target_period
@@ -1333,6 +1503,12 @@ def make_feature_frame(
             p.target_weekday,
             p.iso_week,
             p.month,
+            p.closed_days_next_1,
+            p.closed_days_next_2,
+            p.closed_days_next_3,
+            p.closed_days_prev_1,
+            p.closed_days_prev_2,
+            p.closed_days_prev_3,
             p.is_active,
             p.reason_closed,
             c.is_public_holiday,
@@ -1361,8 +1537,6 @@ def make_feature_frame(
             p.same_weekday_mean_4,
             p.same_weekday_mean_8,
             p.has_annual_history,
-            p.lag_364,
-            p.lag_371,
             p.same_weekday_last_year_mean,
             p.same_week_last_year_mean,
             p.product_cross_store_same_weekday_last_year_mean,
@@ -1472,6 +1646,7 @@ def get_or_materialize_feature_frame(
             if (
                 not pd.Index(required_origins).isin(existing_origins).all()
                 or not required_columns.issubset(feature_frame.columns)
+                or not REMOVED_FEATURE_COLUMNS.isdisjoint(feature_frame.columns)
             ):
                 feature_frame = materialize_features_for_origins(
                     con,

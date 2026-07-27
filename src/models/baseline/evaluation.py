@@ -103,7 +103,7 @@ def forecast_scalar_baselines(
                 value_name="forecast",
             ).assign(
                 forecast=lambda frame: frame["forecast"].where(
-                    frame["is_active"], 0.0
+                    frame["is_active"], float("nan")
                 )
             )
         )
@@ -186,7 +186,7 @@ def forecast_aggregate_then_disaggregate(
             t.reason_closed,
             'aggregate_then_disaggregate' AS model,
             CASE
-                WHEN NOT t.is_active THEN 0.0
+                WHEN NOT t.is_active THEN NULL
                 ELSE GREATEST(
                     0,
                     h.weekly_level * COALESCE(

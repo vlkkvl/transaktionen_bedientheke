@@ -12,7 +12,6 @@ from src.models.lightgbm.base import (
     LightGBMVariantResult,
     fit_lightgbm_model,
     lightgbm_feature_importance,
-    wape_feval,
 )
 from src.models.lightgbm.features.builder import (
     DIAGNOSTIC_COLUMNS,
@@ -56,7 +55,7 @@ class WeeklyTotalConfig(LightGBMModelConfig):
         return {
             **self.hyperparameters.__dict__,
             "objective": "tweedie",
-            "metric": "None",
+            "metric": "tweedie",
             **self.seeded_parameters(),
         }
 
@@ -67,6 +66,12 @@ WEEKLY_FEATURE_COLUMNS = (
     "category_id",
     "week_iso_week",
     "week_month",
+    "closed_days_next_1",
+    "closed_days_next_2",
+    "closed_days_next_3",
+    "closed_days_prev_1",
+    "closed_days_prev_2",
+    "closed_days_prev_3",
     "target_days",
     "event_window_days",
     "min_abs_days_to_event",
@@ -90,8 +95,6 @@ WEEKLY_FEATURE_COLUMNS = (
     "rolling_28_mean",
     "rolling_28_demand_rate",
     "has_annual_history",
-    "lag_364",
-    "lag_371",
     "same_weekday_last_year_mean",
     "same_week_last_year_mean",
     "product_cross_store_same_weekday_last_year_mean",
@@ -126,8 +129,6 @@ def make_weekly_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "product_weekday_profile_value",
         "same_weekday_lag_7",
         "same_weekday_lag_14",
-        "lag_364",
-        "lag_371",
         "same_weekday_last_year_mean",
         "product_cross_store_same_weekday_last_year_mean",
         "same_event_offset_last_year_mean",
@@ -145,6 +146,12 @@ def make_weekly_frame(frame: pd.DataFrame) -> pd.DataFrame:
         target_days=("is_active", "sum"),
         week_iso_week=("iso_week", "first"),
         week_month=("month", "first"),
+        closed_days_next_1=("closed_days_next_1", "sum"),
+        closed_days_next_2=("closed_days_next_2", "sum"),
+        closed_days_next_3=("closed_days_next_3", "sum"),
+        closed_days_prev_1=("closed_days_prev_1", "sum"),
+        closed_days_prev_2=("closed_days_prev_2", "sum"),
+        closed_days_prev_3=("closed_days_prev_3", "sum"),
         event_window_days=("event_window_day", "sum"),
         min_abs_days_to_event=("abs_days_to_event", "min"),
         action_on_forecast_day=("action_on_forecast_day", "sum"),
@@ -173,8 +180,6 @@ def make_weekly_frame(frame: pd.DataFrame) -> pd.DataFrame:
         rolling_28_mean=("rolling_28_mean", "first"),
         rolling_28_demand_rate=("rolling_28_demand_rate", "first"),
         has_annual_history=("has_annual_history", "min"),
-        lag_364=("lag_364", "sum"),
-        lag_371=("lag_371", "sum"),
         same_weekday_last_year_mean=("same_weekday_last_year_mean", "sum"),
         same_week_last_year_mean=("same_week_last_year_mean", "first"),
         product_cross_store_same_weekday_last_year_mean=(
@@ -203,7 +208,12 @@ def _fit_booster(
     evaluation: pd.DataFrame,
     config: GlobalLightGBMConfig,
     params: dict[str, Any] | None = None,
-) -> tuple[BaseLightGBMModel, dict[str, dict[str, list[float]]], int]:
+) -> tuple[
+    BaseLightGBMModel,
+    dict[str, dict[str, list[float]]],
+    int,
+    np.ndarray,
+]:
     return fit_lightgbm_model(
         training=training,
         validation=validation,
@@ -225,7 +235,7 @@ def _fit_booster(
                 "max_bin": 127,
                 "objective": "tweedie",
                 "tweedie_variance_power": 1.5,
-                "metric": "None",
+                "metric": "tweedie",
                 "seed": config.random_state,
                 "feature_fraction_seed": config.random_state,
                 "bagging_seed": config.random_state,
@@ -238,7 +248,6 @@ def _fit_booster(
         feature_columns=WEEKLY_FEATURE_COLUMNS,
         categorical_features=WEEKLY_CATEGORICAL_FEATURES,
         config=config,
-        feval=wape_feval,
         prediction_scale_column=TARGET_SCALE_COLUMN,
     )
 
@@ -273,7 +282,9 @@ def _allocate_forecasts(
         ),
     )
     daily = daily.merge(totals, on=list(WEEK_KEYS), how="left", validate="m:1")
-    daily["forecast"] = daily["weekly_forecast"] * daily["weekday_share"]
+    daily["forecast"] = (
+        daily["weekly_forecast"] * daily["weekday_share"]
+    ).where(daily["is_active"], np.nan)
     allocated = (
         daily.groupby(list(WEEK_KEYS), observed=True)
         .agg(
@@ -297,7 +308,7 @@ def _fit_origin(
     weekly_training = make_weekly_frame(frames.training)
     weekly_validation = make_weekly_frame(frames.validation)
     weekly_evaluation = make_weekly_frame(frames.evaluation)
-    model, history, best_iteration = _fit_booster(
+    model, history, best_iteration, _ = _fit_booster(
         weekly_training,
         weekly_validation,
         weekly_evaluation,
@@ -325,7 +336,10 @@ def _fit_origin(
                     "fit_rows": len(weekly_training),
                     "validation_rows": len(weekly_validation),
                     "best_iteration": best_iteration,
-                    "objective": "weekly_tweedie_1.5",
+                    "objective": "tweedie",
+                    "early_stopping_metric": (
+                        "tweedie_deviance_weekly_totals"
+                    ),
                     "features": len(WEEKLY_FEATURE_COLUMNS),
                 }
             ]

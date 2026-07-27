@@ -110,7 +110,7 @@ class ForecastEvaluationTest(unittest.TestCase):
         self.assertEqual(primary.iloc[0]["forecast"], 1.0)
         closed = primary.loc[~primary["is_active"]].iloc[0]
         self.assertEqual(closed["reason_closed"], "Sunday")
-        self.assertEqual(closed["forecast"], 0.0)
+        self.assertTrue(pd.isna(closed["forecast"]))
 
 class BenchmarkMetricsTest(unittest.TestCase):
     def setUp(self) -> None:

@@ -104,13 +104,26 @@ def iter_run_frames(
     resolved_data_dir = design.data_dir if data_dir is None else data_dir
     tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
     if "benchmark_daily_rows" not in tables:
+        print(
+            f"[data] Loading prepared daily demand rows from {resolved_data_dir}...",
+            flush=True,
+        )
         prepare_daily_rows(con, data_dir=resolved_data_dir)
+    else:
+        print("[data] Reusing benchmark_daily_rows from the connection", flush=True)
     last_observed = con.execute(
         "SELECT MAX(period) FROM benchmark_daily_rows"
     ).fetchone()[0]
     evaluation_origins = design.origins_through(last_observed)
     _validate_design(design, config, evaluation_origins)
+    print(
+        f"[data] Using {len(evaluation_origins)} evaluation origins from "
+        f"{evaluation_origins.min().date()} through "
+        f"{evaluation_origins.max().date()}",
+        flush=True,
+    )
 
+    print("[features] Preparing leakage-safe origin history...", flush=True)
     create_history_features(con)
     _create_assessed_origins(con, evaluation_origins, design)
     con.execute("DROP TABLE IF EXISTS benchmark_row_features")
@@ -135,9 +148,15 @@ def iter_run_frames(
     if legacy_file:
         assert requested_path is not None
         feature_source: Path | Sequence[Path] = requested_path
-        if rebuild_features or not _feature_cache_covers(
+        cache_ready = not rebuild_features and _feature_cache_covers(
             con, requested_path, required_origins
-        ):
+        )
+        if not cache_ready:
+            print(
+                f"[features] Materializing {len(required_origins):,} origins "
+                f"to {requested_path}...",
+                flush=True,
+            )
             create_feature_tables(con)
             materialize_features_for_origins(
                 con,
@@ -146,6 +165,9 @@ def iter_run_frames(
                 feature_path=requested_path,
                 return_frame=False,
             )
+            print(f"[features] Feature file ready: {requested_path}", flush=True)
+        else:
+            print(f"[features] Reusing cached feature file {requested_path}", flush=True)
     else:
         store = LightGBMFeatureStore(
             DEFAULT_FEATURE_STORE_DIR if requested_path is None else requested_path
@@ -157,9 +179,17 @@ def iter_run_frames(
             rebuild=rebuild_features,
         ).parquet_paths
 
-    for window in iter_lightgbm_origin_windows(
-        initial_origins, evaluation_origins, config
-    ):
+    windows = tuple(
+        iter_lightgbm_origin_windows(initial_origins, evaluation_origins, config)
+    )
+    for position, window in enumerate(windows, start=1):
+        evaluation_start = window.evaluation.min().date()
+        evaluation_end = window.evaluation.max().date()
+        print(
+            f"[frames {position}/{len(windows)}] Loading train, validation, and "
+            f"evaluation rows for {evaluation_start} through {evaluation_end}...",
+            flush=True,
+        )
         training = _load_origins(
             con, feature_source, window.training, active_only=True
         )
@@ -171,6 +201,12 @@ def iter_run_frames(
         )
         if training.empty or validation.empty or evaluation.empty:
             raise RuntimeError("Training, validation, and evaluation must be nonempty")
+        print(
+            f"[frames {position}/{len(windows)}] Ready: "
+            f"{len(training):,} training, {len(validation):,} validation, "
+            f"and {len(evaluation):,} evaluation rows",
+            flush=True,
+        )
         yield GlobalLightGBMFrames(
             training=training,
             validation=validation,
@@ -189,7 +225,7 @@ def prepare_run_frames(
     feature_dataset_path: Path | None = None,
     rebuild_features: bool = False,
 ) -> GlobalLightGBMFrames:
-    """Collect shared streaming frames for workloads such as feature ablation."""
+    """Collect shared streaming frames for a full LightGBM evaluation run."""
     parts = tuple(
         iter_run_frames(
             con,
@@ -273,6 +309,16 @@ class _StreamingResultWriter:
                     results_dir=self.results_dir,
                 )
             self._append(artifact, result.allocation_audit)
+        if result.validation_predictions is not None:
+            artifact = "validation_predictions"
+            if artifact not in self.paths:
+                self.paths[artifact] = result_path(
+                    self.model_name,
+                    self.design,
+                    artifact=artifact,
+                    results_dir=self.results_dir,
+                )
+            self._append(artifact, result.validation_predictions)
 
     def publish(self) -> list[Path]:
         paths = []
@@ -314,6 +360,11 @@ def run_specs(
     names = [spec.name for spec in specs]
     if len(set(names)) != len(names):
         raise ValueError("LightGBM model specifications must have unique names")
+    print(
+        f"Running {len(specs)} LightGBM model{'s' if len(specs) != 1 else ''}: "
+        f"{', '.join(names)}",
+        flush=True,
+    )
 
     resolved_configs: dict[str, LightGBMModelConfig] = {}
     supplied = {} if configs is None else dict(configs)
@@ -362,17 +413,39 @@ def run_specs(
             start=1,
         ):
             origin = pd.to_datetime(frames.evaluation["origin"]).min().date()
-            for spec in specs:
+            for model_position, spec in enumerate(specs, start=1):
                 print(
-                    f"[{position}/{refit_count}] Fitting {spec.name} at {origin} "
+                    f"[refit {position}/{refit_count}, model "
+                    f"{model_position}/{len(specs)}] Fitting {spec.name} at {origin} "
                     f"({len(frames.training):,} training rows)...",
                     flush=True,
                 )
                 result = spec.fit(frames, resolved_configs[spec.name])
                 writers[spec.name].append(result)
+                iterations = ""
+                if "best_iteration" in result.training_summary:
+                    iterations = ", ".join(
+                        str(int(value))
+                        for value in result.training_summary[
+                            "best_iteration"
+                        ].dropna()
+                    )
+                iteration_text = (
+                    f"; best iteration{'s' if ', ' in iterations else ''}: {iterations}"
+                    if iterations
+                    else ""
+                )
+                print(
+                    f"[refit {position}/{refit_count}, model "
+                    f"{model_position}/{len(specs)}] Completed {spec.name}: "
+                    f"{len(result.forecasts):,} forecasts{iteration_text}",
+                    flush=True,
+                )
         paths: list[Path] = []
         for spec in specs:
-            paths.extend(writers[spec.name].publish())
+            print(f"[results] Publishing artifacts for {spec.name}...", flush=True)
+            model_paths = writers[spec.name].publish()
+            paths.extend(model_paths)
             paths.append(
                 write_result(
                     _config_record(spec.name, resolved_configs[spec.name]),
@@ -382,6 +455,11 @@ def run_specs(
                     results_dir=results_dir,
                 )
             )
+            print(
+                f"[results] Published {len(model_paths) + 1} files for {spec.name}",
+                flush=True,
+            )
+        print(f"LightGBM run complete: {len(paths)} result files", flush=True)
         return paths
     finally:
         if owns_connection:

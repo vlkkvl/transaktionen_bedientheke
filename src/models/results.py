@@ -43,6 +43,7 @@ class PersistedModelResult:
     training_summary: pd.DataFrame
     feature_importance: pd.DataFrame
     allocation_audit: pd.DataFrame | None = None
+    validation_predictions: pd.DataFrame | None = None
 
 
 def model_file_name(model: str) -> str:
@@ -189,6 +190,12 @@ def load_lightgbm_results(
             artifact="allocation_audits",
             results_dir=results_dir,
         )
+        validation_predictions_path = result_path(
+            model,
+            design,
+            artifact="validation_predictions",
+            results_dir=results_dir,
+        )
         loaded[model] = PersistedModelResult(
             forecasts=read_result(model, design, results_dir=results_dir),
             training_summary=read_result(
@@ -211,6 +218,16 @@ def load_lightgbm_results(
                     results_dir=results_dir,
                 )
                 if allocation_path.exists()
+                else None
+            ),
+            validation_predictions=(
+                read_result(
+                    model,
+                    design,
+                    artifact="validation_predictions",
+                    results_dir=results_dir,
+                )
+                if validation_predictions_path.exists()
                 else None
             ),
         )

@@ -13,7 +13,6 @@ from src.models.lightgbm.base import (
     BaseLightGBMModel,
     fit_lightgbm_model,
     lightgbm_feature_importance,
-    wape_feval,
 )
 from src.models.lightgbm.features.builder import (
     CATEGORICAL_FEATURES,
@@ -59,7 +58,7 @@ class L2Config(LightGBMModelConfig):
         return {
             **self.hyperparameters.__dict__,
             "objective": "regression_l2",
-            "metric": "l2",
+            "metric": "rmse",
             **self.seeded_parameters(),
         }
 
@@ -69,7 +68,7 @@ def _fit_origin(
     config: GlobalLightGBMConfig,
     params: dict[str, Any] | None = None,
 ) -> GlobalLightGBMResult:
-    model, history, best_iteration = fit_lightgbm_model(
+    model, history, best_iteration, _ = fit_lightgbm_model(
         training=frames.training,
         validation=frames.validation,
         labels=(
@@ -81,7 +80,7 @@ def _fit_origin(
             {
                 **base_model_params(config),
                 "objective": "regression_l2",
-                "metric": "l2",
+                "metric": "rmse",
             }
             if params is None
             else params
@@ -89,7 +88,6 @@ def _fit_origin(
         feature_columns=FEATURE_COLUMNS,
         categorical_features=CATEGORICAL_FEATURES,
         config=config,
-        feval=wape_feval,
         prediction_scale_column=TARGET_SCALE_COLUMN,
     )
     return GlobalLightGBMResult(
@@ -105,6 +103,7 @@ def _fit_origin(
                     **training_summary_fields(frames),
                     "best_iteration": best_iteration,
                     "objective": "regression_l2",
+                    "early_stopping_metric": "rmse",
                     "features": len(FEATURE_COLUMNS),
                 }
             ]
@@ -141,6 +140,7 @@ def run_global_lightgbm(
 ) -> GlobalLightGBMResult:
     """Prepare weekly features and refit the L2 model every four origins."""
     config = GlobalLightGBMConfig() if config is None else config
+    print("[global_lightgbm] Preparing shared feature frames...", flush=True)
     frames = prepare_global_lightgbm_frames(
         design=design,
         evaluation_origins=evaluation_origins,
@@ -150,7 +150,13 @@ def run_global_lightgbm(
         feature_dataset_path=feature_dataset_path,
         force_feature_recompute=force_feature_recompute,
     )
-    return fit_global_lightgbm_frames(frames, config)
+    print("[global_lightgbm] Fitting expanding-window L2 models...", flush=True)
+    result = fit_global_lightgbm_frames(frames, config)
+    print(
+        f"[global_lightgbm] Completed: {len(result.forecasts):,} forecasts",
+        flush=True,
+    )
+    return result
 
 
 GlobalLightGBMModel = BaseLightGBMModel

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,8 +16,10 @@ from src.models.benchmark.models import create_history_features
 from src.models.lightgbm import (
     FEATURE_COLUMNS,
     FEATURE_DESCRIPTIONS,
+    MODEL_NAME,
     NORMALIZED_TARGET_COLUMN,
     TARGET_SCALE_COLUMN,
+    TWEEDIE_MODEL_NAME,
     TWO_STAGE_MODEL_NAME,
     WEEKLY_MODEL_NAME,
     GlobalLightGBMConfig,
@@ -28,6 +32,7 @@ from src.models.lightgbm import (
 )
 from src.models.lightgbm.base import BaseLightGBMModel
 from src.models.lightgbm.features.builder import (
+    get_last_year_offset,
     iter_lightgbm_origin_windows,
     materialize_features_for_origins,
 )
@@ -133,7 +138,12 @@ class GlobalLightGBMTest(unittest.TestCase):
             """
             UPDATE benchmark_daily_rows
             SET is_active = FALSE, reason_closed = 'test closure'
-            WHERE period = DATE '2024-10-05'
+            WHERE MARKT_ID = 10
+                AND period IN (
+                    DATE '2024-10-05',
+                    DATE '2024-10-08',
+                    DATE '2024-10-10'
+                )
             """
         )
         create_feature_tables(self.con)
@@ -150,6 +160,7 @@ class GlobalLightGBMTest(unittest.TestCase):
             [origin.date()],
         ).fetchdf()
         active_history = history.loc[history["is_active"]].reset_index(drop=True)
+        positive_history = active_history.loc[active_history["demand"].gt(0)]
         sale_positions = np.flatnonzero(active_history["demand"].to_numpy() > 0)
         completed_gaps = np.diff(sale_positions) - 1
         current_gap = len(active_history) - int(sale_positions[-1]) - 1
@@ -171,6 +182,8 @@ class GlobalLightGBMTest(unittest.TestCase):
             "lag_1",
             "lag_7",
             "lag_14",
+            "lag_364",
+            "lag_371",
             "zero_share",
         }
         self.assertTrue(removed_features.isdisjoint(frame.columns))
@@ -183,6 +196,19 @@ class GlobalLightGBMTest(unittest.TestCase):
             {"is_active", "reason_closed"}.issubset(FORECAST_ID_COLUMNS)
         )
         self.assertIn("is_public_holiday", DIAGNOSTIC_COLUMNS)
+        self.assertEqual(
+            first[
+                [
+                    "closed_days_next_1",
+                    "closed_days_next_2",
+                    "closed_days_next_3",
+                    "closed_days_prev_1",
+                    "closed_days_prev_2",
+                    "closed_days_prev_3",
+                ]
+            ].tolist(),
+            [1, 1, 2, 0, 1, 1],
+        )
         self.assertEqual(
             first.same_weekday_lag_7,
             history.loc[history["period"].eq(origin - pd.Timedelta(days=7)), "demand"]
@@ -198,11 +224,11 @@ class GlobalLightGBMTest(unittest.TestCase):
             first.rolling_28_mean, history["demand"].iloc[-28:].mean()
         )
         self.assertAlmostEqual(
-            first[TARGET_SCALE_COLUMN], active_history["demand"].mean()
+            first[TARGET_SCALE_COLUMN], positive_history["demand"].mean()
         )
         self.assertAlmostEqual(
             first[NORMALIZED_TARGET_COLUMN],
-            first.actual / active_history["demand"].mean(),
+            first.actual / positive_history["demand"].mean(),
         )
         for days in (7, 28, 60):
             trailing = history.iloc[-days:]
@@ -219,6 +245,7 @@ class GlobalLightGBMTest(unittest.TestCase):
         )
         weekly = make_weekly_frame(frame)
         self.assertEqual(set(WEEKLY_FEATURE_COLUMNS) - set(weekly.columns), set())
+        self.assertTrue({"lag_364", "lag_371"}.isdisjoint(WEEKLY_FEATURE_COLUMNS))
         self.assertEqual(first.days_since_last_action, 10)
         self.assertEqual(first.actions_last_28d, 1)
         self.assertEqual(frame["action_during_horizon"].unique().tolist(), [1])
@@ -235,7 +262,18 @@ class GlobalLightGBMTest(unittest.TestCase):
         self.assertNotIn("demand_class", frame.columns)
 
     def test_annual_features_use_calendar_aligned_history(self) -> None:
-        origin = pd.Timestamp("2025-02-03")
+        origin = pd.Timestamp("2025-04-07")
+        annual_offset = get_last_year_offset(origin)
+        annual_reference = origin - pd.Timedelta(days=annual_offset)
+        self.con.execute(
+            """
+            UPDATE benchmark_daily_rows
+            SET demand = 100.0
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10
+                AND period BETWEEN ? - INTERVAL 14 DAY AND ? + INTERVAL 14 DAY
+            """,
+            [annual_reference.date(), annual_reference.date()],
+        )
         create_feature_tables(self.con)
         frame = make_feature_frame(self.con, [origin], self.design)
         first = frame.loc[
@@ -252,19 +290,21 @@ class GlobalLightGBMTest(unittest.TestCase):
             """
         ).fetchdf()
         demand_by_date = history.set_index("period")["demand"]
-        annual_reference = origin - pd.Timedelta(days=364)
         corresponding_weekdays = [
-            annual_reference + pd.Timedelta(days=offset)
-            for offset in (-14, -7, 0, 7, 14)
+            origin - pd.Timedelta(days=offset)
+            for offset in (
+                annual_offset - 14,
+                annual_offset - 7,
+                annual_offset,
+                annual_offset + 7,
+                annual_offset + 14,
+            )
         ]
         prior_week = pd.date_range(annual_reference, periods=7, freq="D")
 
+        self.assertEqual(annual_offset, 385)
         self.assertEqual(first.has_annual_history, 1)
-        self.assertEqual(first.lag_364, demand_by_date.loc[annual_reference])
-        self.assertEqual(
-            first.lag_371,
-            demand_by_date.loc[origin - pd.Timedelta(days=371)],
-        )
+        self.assertTrue({"lag_364", "lag_371"}.isdisjoint(frame.columns))
         self.assertAlmostEqual(
             first.same_weekday_last_year_mean,
             demand_by_date.loc[corresponding_weekdays].mean(),
@@ -311,6 +351,45 @@ class GlobalLightGBMTest(unittest.TestCase):
             [event_reference, event_reference],
         ).fetchone()[0]
         self.assertAlmostEqual(first.same_event_offset_last_year_mean, event_mean)
+
+    def test_last_year_offset_uses_inclusive_easter_window(self) -> None:
+        self.assertEqual(get_last_year_offset("2025-03-29"), 364)
+        self.assertEqual(get_last_year_offset("2025-03-30"), 385)
+        self.assertEqual(get_last_year_offset("2025-06-23"), 385)
+        self.assertEqual(get_last_year_offset("2025-06-24"), 364)
+
+    def test_has_annual_history_uses_easter_offset(self) -> None:
+        origin = pd.Timestamp("2025-04-07")
+        annual_reference = origin - pd.Timedelta(
+            days=get_last_year_offset(origin)
+        )
+        fixed_reference = origin - pd.Timedelta(days=364)
+        self.con.execute(
+            """
+            DELETE FROM benchmark_daily_rows
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10 AND period = ?
+            """,
+            [annual_reference.date()],
+        )
+        create_feature_tables(self.con)
+
+        fixed_reference_exists = self.con.execute(
+            """
+            SELECT COUNT(*)
+            FROM benchmark_daily_rows
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10 AND period = ?
+            """,
+            [fixed_reference.date()],
+        ).fetchone()[0]
+        frame = make_feature_frame(self.con, [origin], self.design)
+        first = frame.loc[
+            frame.ARTIKEL_ID.eq(1)
+            & frame.MARKT_ID.eq(10)
+            & frame.period.eq(origin)
+        ].iloc[0]
+
+        self.assertEqual(fixed_reference_exists, 1)
+        self.assertEqual(first.has_annual_history, 0)
 
     def test_feature_materialization_writes_origin_batches(self) -> None:
         origins = pd.DatetimeIndex(["2025-01-06", "2025-01-13"])
@@ -444,6 +523,14 @@ class GlobalLightGBMTest(unittest.TestCase):
             periods=2,
             freq=f"{self.design.origin_spacing_days}D",
         )
+        self.con.execute(
+            """
+            UPDATE benchmark_daily_rows
+            SET is_active = FALSE, reason_closed = 'test closure'
+            WHERE MARKT_ID = 10 AND period = ?
+            """,
+            [self.design.first_origin.date()],
+        )
         frames = prepare_global_lightgbm_frames(
             design=self.design,
             evaluation_origins=evaluation_origins,
@@ -451,20 +538,68 @@ class GlobalLightGBMTest(unittest.TestCase):
             feature_dataset_path=self.feature_dataset_path,
             config=config,
         )
-        results = fit_all_lightgbm_models(frames, config)
+        progress = StringIO()
+        with redirect_stdout(progress):
+            results = fit_all_lightgbm_models(frames, config)
 
         self.assertEqual(len(results), 4)
+        self.assertIn("[model 1/4] Fitting", progress.getvalue())
+        self.assertIn("[model 4/4] Completed", progress.getvalue())
+        expected_training_settings = {
+            MODEL_NAME: [("regression_l2", "rmse")],
+            TWEEDIE_MODEL_NAME: [("tweedie", "tweedie_deviance")],
+            TWO_STAGE_MODEL_NAME: [
+                ("binary", "binary_logloss"),
+                ("gamma", "gamma_deviance"),
+            ],
+            WEEKLY_MODEL_NAME: [
+                ("tweedie", "tweedie_deviance_weekly_totals")
+            ],
+        }
         for model_name, result in results.items():
             self.assertEqual(len(result.forecasts), len(frames.evaluation))
-            self.assertTrue(result.forecasts.forecast.ge(0).all())
+            active = result.forecasts["is_active"]
+            self.assertTrue(result.forecasts.loc[active, "forecast"].ge(0).all())
+            self.assertTrue(result.forecasts.loc[~active, "forecast"].isna().all())
             expected_summary_rows = 2 if model_name == TWO_STAGE_MODEL_NAME else 1
             self.assertEqual(len(result.training_summary), expected_summary_rows)
             self.assertEqual(result.training_summary.loc[0, "evaluation_origins"], 2)
+            self.assertEqual(
+                list(
+                    result.training_summary[
+                        ["objective", "early_stopping_metric"]
+                    ].itertuples(index=False, name=None)
+                ),
+                expected_training_settings[model_name],
+            )
         weekly_audit = results[WEEKLY_MODEL_NAME].allocation_audit
         self.assertIsNotNone(weekly_audit)
         assert weekly_audit is not None
         self.assertLess(weekly_audit.allocation_error.max(), 1e-9)
         self.assertTrue(np.allclose(weekly_audit.weekday_share_sum, 1.0))
+
+        two_stage = results[TWO_STAGE_MODEL_NAME]
+        validation_predictions = two_stage.validation_predictions
+        self.assertIsNotNone(validation_predictions)
+        assert validation_predictions is not None
+        self.assertEqual(len(validation_predictions), len(frames.validation))
+        self.assertTrue(
+            validation_predictions.occurrence_probability.between(0, 1).all()
+        )
+        occurrence_iteration = int(
+            two_stage.training_summary.loc[
+                two_stage.training_summary.stage.eq("occurrence"),
+                "best_iteration",
+            ].iloc[0]
+        )
+        self.assertEqual(
+            validation_predictions.best_iteration.unique().tolist(),
+            [occurrence_iteration],
+        )
+        self.assertEqual(
+            pd.DatetimeIndex(validation_predictions.origin.unique()).tolist(),
+            pd.DatetimeIndex(frames.validation.origin.unique()).tolist(),
+        )
 
 
 if __name__ == "__main__":

@@ -121,6 +121,28 @@ class BaselineEvaluationTest(unittest.TestCase):
         self.assertEqual(len(forecasts), 7)
         np.testing.assert_allclose(forecasts["forecast"], 1.0)
 
+    def test_closed_target_forecasts_are_missing(self) -> None:
+        self.con.execute(
+            """
+            UPDATE benchmark_daily_rows
+            SET is_active = FALSE, reason_closed = 'test closure'
+            WHERE period = ?
+            """,
+            [self.origin.date()],
+        )
+
+        scalar = forecast_scalar_baselines(self.con, horizon_days=7)
+        aggregate = forecast_aggregate_then_disaggregate(
+            self.con, horizon_days=7
+        )
+
+        self.assertTrue(
+            scalar.loc[~scalar["is_active"], "forecast"].isna().all()
+        )
+        self.assertTrue(
+            aggregate.loc[~aggregate["is_active"], "forecast"].isna().all()
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

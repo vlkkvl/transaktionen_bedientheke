@@ -21,6 +21,7 @@ from src.models.lightgbm.tweedie.model import (
     TweedieHyperparameters,
 )
 from src.models.lightgbm.two_stage.model import TwoStageConfig
+from src.models.lightgbm.weekly_total.model import WeeklyTotalConfig
 from src.models.lightgbm.runner import run_specs
 
 
@@ -50,7 +51,24 @@ class ModelConfigurationTest(unittest.TestCase):
 
         self.assertEqual(config.occurrence_parameters()["objective"], "binary")
         self.assertEqual(
-            config.quantity_parameters()["objective"], "regression_l1"
+            config.occurrence_parameters()["metric"], "binary_logloss"
+        )
+        self.assertEqual(config.quantity_parameters()["objective"], "gamma")
+        self.assertEqual(config.quantity_parameters()["metric"], "gamma")
+
+    def test_objectives_and_early_stopping_metrics_are_model_specific(self) -> None:
+        l2 = L2Config().parameters()
+        tweedie = TweedieConfig().parameters()
+        weekly = WeeklyTotalConfig().parameters()
+
+        self.assertEqual((l2["objective"], l2["metric"]), ("regression_l2", "rmse"))
+        self.assertEqual(
+            (tweedie["objective"], tweedie["metric"]),
+            ("tweedie", "tweedie"),
+        )
+        self.assertEqual(
+            (weekly["objective"], weekly["metric"]),
+            ("tweedie", "tweedie"),
         )
 
 
@@ -182,6 +200,16 @@ class FeatureStoreTest(unittest.TestCase):
         self.assertEqual(
             sum(path.parent.name == "run_configs" for path in paths),
             len(LIGHTGBM_MODELS),
+        )
+        validation_paths = [
+            path for path in paths if path.parent.name == "validation_predictions"
+        ]
+        self.assertEqual(len(validation_paths), 1)
+        validation_predictions = pd.read_csv(validation_paths[0])
+        self.assertIn("occurrence_probability", validation_predictions)
+        self.assertEqual(
+            len(validation_predictions),
+            window.validation_origins * 7,
         )
         generations = list(
             (root / "features" / "lightgbm_daily" / "v1").iterdir()

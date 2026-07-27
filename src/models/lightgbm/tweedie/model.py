@@ -10,7 +10,6 @@ from src.models.lightgbm.base import (
     LightGBMVariantResult,
     fit_lightgbm_model,
     lightgbm_feature_importance,
-    wape_feval,
 )
 from src.models.lightgbm.features.builder import (
     CATEGORICAL_FEATURES,
@@ -56,7 +55,7 @@ class TweedieConfig(LightGBMModelConfig):
         return {
             **self.hyperparameters.__dict__,
             "objective": "tweedie",
-            "metric": "None",
+            "metric": "tweedie",
             **self.seeded_parameters(),
         }
 
@@ -66,7 +65,7 @@ def _fit_origin(
     config: GlobalLightGBMConfig,
     params: dict[str, Any] | None = None,
 ) -> LightGBMVariantResult:
-    model, history, best_iteration = fit_lightgbm_model(
+    model, history, best_iteration, _ = fit_lightgbm_model(
         training=frames.training,
         validation=frames.validation,
         labels=(
@@ -79,7 +78,7 @@ def _fit_origin(
                 **base_model_params(config),
                 "objective": "tweedie",
                 "tweedie_variance_power": 1.5,
-                "metric": "None",
+                "metric": "tweedie",
             }
             if params is None
             else params
@@ -87,7 +86,6 @@ def _fit_origin(
         feature_columns=FEATURE_COLUMNS,
         categorical_features=CATEGORICAL_FEATURES,
         config=config,
-        feval=wape_feval,
         prediction_scale_column=TARGET_SCALE_COLUMN,
     )
     return LightGBMVariantResult(
@@ -102,7 +100,8 @@ def _fit_origin(
                     "model": TWEEDIE_MODEL_NAME,
                     **training_summary_fields(frames),
                     "best_iteration": best_iteration,
-                    "objective": "tweedie_1.5",
+                    "objective": "tweedie",
+                    "early_stopping_metric": "tweedie_deviance",
                     "features": len(FEATURE_COLUMNS),
                 }
             ]

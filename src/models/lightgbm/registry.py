@@ -44,12 +44,27 @@ def fit_all_lightgbm_models(
 ) -> dict[str, GlobalLightGBMResult | LightGBMVariantResult]:
     """Compatibility helper for fitting every model to prepared frames."""
     config = GlobalLightGBMConfig() if config is None else config
-    return {
-        MODEL_NAME: fit_global_lightgbm_frames(frames, config),
-        TWEEDIE_MODEL_NAME: fit_tweedie_daily(frames, config),
-        TWO_STAGE_MODEL_NAME: fit_two_stage(frames, config),
-        WEEKLY_MODEL_NAME: fit_weekly_total(frames, config),
-    }
+    fitters = (
+        (MODEL_NAME, fit_global_lightgbm_frames),
+        (TWEEDIE_MODEL_NAME, fit_tweedie_daily),
+        (TWO_STAGE_MODEL_NAME, fit_two_stage),
+        (WEEKLY_MODEL_NAME, fit_weekly_total),
+    )
+    results: dict[str, GlobalLightGBMResult | LightGBMVariantResult] = {}
+    for position, (model_name, fitter) in enumerate(fitters, start=1):
+        print(
+            f"[model {position}/{len(fitters)}] Fitting "
+            f"{LIGHTGBM_MODEL_LABELS[model_name]}...",
+            flush=True,
+        )
+        result = fitter(frames, config)
+        results[model_name] = result
+        print(
+            f"[model {position}/{len(fitters)}] Completed {model_name}: "
+            f"{len(result.forecasts):,} forecasts",
+            flush=True,
+        )
+    return results
 
 __all__ = [
     "LIGHTGBM_MODELS",

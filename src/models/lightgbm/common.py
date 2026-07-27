@@ -31,6 +31,7 @@ class GlobalLightGBMResult:
     training_summary: pd.DataFrame
     evaluation_history: dict[str, Any]
     allocation_audit: pd.DataFrame | None = None
+    validation_predictions: pd.DataFrame | None = None
 
 
 def origin_frame_sequence(
@@ -101,6 +102,11 @@ def combine_origin_results(
         for result in results
         if result.allocation_audit is not None
     ]
+    validation_predictions = [
+        result.validation_predictions
+        for result in results
+        if result.validation_predictions is not None
+    ]
     return result_class(
         model=results[-1].model,
         forecasts=pd.concat([result.forecasts for result in results], ignore_index=True),
@@ -110,6 +116,11 @@ def combine_origin_results(
         ),
         evaluation_history=histories,
         allocation_audit=(pd.concat(audits, ignore_index=True) if audits else None),
+        validation_predictions=(
+            pd.concat(validation_predictions, ignore_index=True)
+            if validation_predictions
+            else None
+        ),
     )
 
 
@@ -144,14 +155,6 @@ def daily_forecasts(
     ].copy()
     forecasts["model"] = model_name
     forecasts["forecast"] = np.where(
-        forecasts["is_active"], np.maximum(prediction, 0.0), 0.0
+        forecasts["is_active"], np.maximum(prediction, 0.0), np.nan
     )
     return forecasts
-
-
-# Private aliases retained for the ablation module and older internal imports.
-_base_model_params = base_model_params
-_combine_origin_results = combine_origin_results
-_daily_forecasts = daily_forecasts
-_origin_frame_sequence = origin_frame_sequence
-_training_summary_fields = training_summary_fields

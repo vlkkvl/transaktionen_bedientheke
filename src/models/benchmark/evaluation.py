@@ -263,15 +263,15 @@ def _forecast_rows(
             actual,
             is_active,
             reason_closed,
-            CASE WHEN is_active THEN recent_mean ELSE 0.0 END AS recent_mean,
+            CASE WHEN is_active THEN recent_mean ELSE NULL END AS recent_mean,
             CASE
                 WHEN is_active THEN COALESCE(same_weekday_mean, recent_mean)
-                ELSE 0.0
+                ELSE NULL
             END AS same_weekday_moving_average,
             CASE
                 WHEN is_active
                     THEN recent_occurrence_rate * COALESCE(positive_quantity_mean, 0)
-                ELSE 0.0
+                ELSE NULL
             END AS occurrence_x_positive_quantity
         FROM with_positive_quantity
         ORDER BY origin, ARTIKEL_ID, MARKT_ID, period

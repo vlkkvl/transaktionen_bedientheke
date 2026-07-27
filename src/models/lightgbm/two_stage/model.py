@@ -16,7 +16,9 @@ from src.models.lightgbm.base import (
 )
 from src.models.lightgbm.features.builder import (
     CATEGORICAL_FEATURES,
+    DIAGNOSTIC_COLUMNS,
     FEATURE_COLUMNS,
+    FORECAST_ID_COLUMNS,
     NORMALIZED_TARGET_COLUMN,
     TARGET_SCALE_COLUMN,
     GlobalLightGBMConfig,
@@ -80,8 +82,8 @@ class TwoStageConfig(LightGBMModelConfig):
     def quantity_parameters(self) -> dict[str, Any]:
         return {
             **self.quantity.__dict__,
-            "objective": "regression_l1",
-            "metric": "l1",
+            "objective": "gamma",
+            "metric": "gamma",
             **self.seeded_parameters(),
         }
 
@@ -97,7 +99,12 @@ def _train_stage(
     labels: tuple[pd.Series, pd.Series],
     restore_target_scale: bool = False,
     params: dict[str, Any] | None = None,
-) -> tuple[BaseLightGBMModel, dict[str, dict[str, list[float]]], int]:
+) -> tuple[
+    BaseLightGBMModel,
+    dict[str, dict[str, list[float]]],
+    int,
+    np.ndarray,
+]:
     return fit_lightgbm_model(
         training=training,
         validation=validation,
@@ -127,7 +134,12 @@ def _fit_origin(
     occurrence_params: dict[str, Any] | None = None,
     quantity_params: dict[str, Any] | None = None,
 ) -> LightGBMVariantResult:
-    occurrence, occurrence_history, occurrence_iteration = _train_stage(
+    (
+        occurrence,
+        occurrence_history,
+        occurrence_iteration,
+        validation_occurrence_probability,
+    ) = _train_stage(
         frames.training,
         frames.validation,
         frames.evaluation,
@@ -150,13 +162,13 @@ def _fit_origin(
             "two-stage model cannot be fit."
         )
 
-    quantity, quantity_history, quantity_iteration = _train_stage(
+    quantity, quantity_history, quantity_iteration, _ = _train_stage(
         positive_training,
         positive_validation,
         frames.evaluation,
         config,
-        objective="regression_l1",
-        metric="l1",
+        objective="gamma",
+        metric="gamma",
         labels=(
             positive_training[NORMALIZED_TARGET_COLUMN],
             positive_validation[NORMALIZED_TARGET_COLUMN],
@@ -180,6 +192,19 @@ def _fit_origin(
         [occurrence_importance, quantity_importance], ignore_index=True
     )
     common_summary = training_summary_fields(frames)
+    validation_predictions = frames.validation.loc[
+        :, [*FORECAST_ID_COLUMNS, *DIAGNOSTIC_COLUMNS]
+    ].copy()
+    validation_predictions["model"] = TWO_STAGE_MODEL_NAME
+    validation_predictions["evaluation_origin"] = common_summary[
+        "evaluation_origin"
+    ]
+    validation_predictions["best_iteration"] = occurrence_iteration
+    validation_predictions["occurrence_probability"] = np.clip(
+        validation_occurrence_probability,
+        0.0,
+        1.0,
+    )
     summary = pd.DataFrame(
         [
             {
@@ -187,7 +212,8 @@ def _fit_origin(
                 "stage": "occurrence",
                 **common_summary,
                 "best_iteration": occurrence_iteration,
-                "objective": "binary_logloss",
+                "objective": "binary",
+                "early_stopping_metric": "binary_logloss",
                 "features": len(FEATURE_COLUMNS),
             },
             {
@@ -197,7 +223,8 @@ def _fit_origin(
                 "fit_rows": len(positive_training),
                 "validation_rows": len(positive_validation),
                 "best_iteration": quantity_iteration,
-                "objective": "regression_l1_positive_rows",
+                "objective": "gamma",
+                "early_stopping_metric": "gamma_deviance",
                 "features": len(FEATURE_COLUMNS),
             },
         ]
@@ -211,6 +238,7 @@ def _fit_origin(
             "occurrence": occurrence_history,
             "positive_quantity": quantity_history,
         },
+        validation_predictions=validation_predictions,
     )
 
 
