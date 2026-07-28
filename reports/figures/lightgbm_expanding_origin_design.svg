@@ -1,223 +1,207 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1220" viewBox="0 0 1400 1220" role="img" aria-labelledby="title description">
-  <title id="title">Expanding-origin LightGBM forecasting design</title>
-  <desc id="description">At Q, ten origins fit the model and two validate it. Origins are 28 days apart and each forecast covers seven days. Seven direct feature rows use history available at Q and target-day-specific horizon and calendar information.</desc>
-  <style>
-    .title { font: 700 30px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
-    .subtitle { font: 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526078; }
-    .row-label { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
-    .count { font: 600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526078; }
-    .box-label { font: 700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: white; text-anchor: middle; dominant-baseline: middle; }
-    .legend { font: 600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344158; }
-    .note { font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526078; }
-    .panel-title { font: 700 23px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
-    .panel-subtitle { font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526078; }
-    .feature-title { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: white; }
-    .feature-text { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: white; }
-    .day-text { font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #4c1d95; }
-    .model-text { font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1d4ed8; text-anchor: middle; }
-    .prediction-text { font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: white; text-anchor: middle; }
-    .fit { fill: #2563eb; }
-    .validation { fill: #f59e0b; }
-    .forecast { fill: #16a34a; }
-    .future { fill: #e2e8f0; }
-    .history { fill: #334155; }
-    .target-feature { fill: #ede9fe; stroke: #8b5cf6; stroke-width: 2; }
-    .model { fill: #eff6ff; stroke: #3b82f6; stroke-width: 2; }
-    .outline { stroke: #ffffff; stroke-width: 2; rx: 7; }
-  </style>
+<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 794 1123" role="img" aria-labelledby="title description">
+  <title id="title">LightGBM modelling design</title>
+  <desc id="description">A4 portrait flow diagram of the expanding rolling window and four LightGBM forecast architectures.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#64748b"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .title { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .section { font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .card-title { font: 700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .label { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #344158; }
+      .small { font: 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526078; }
+      .tiny { font: 9px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526078; }
+      .white { fill: #ffffff; }
+      .bold { font-weight: 700; }
+      .center { text-anchor: middle; }
+      .training { fill: #2563eb; }
+      .validation { fill: #f59e0b; }
+      .test { fill: #16a34a; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.3; }
+      .connector { fill: none; stroke: #64748b; stroke-width: 1.7; marker-end: url(#arrow); }
+      .bus { fill: none; stroke: #94a3b8; stroke-width: 1.5; }
+    </style>
+  </defs>
 
-  <rect width="1400" height="650" fill="#f8fafc" rx="18"/>
-  <text x="" y="58" class="title">Expanding-origin forecasting design</text>
-  <text x="55" y="91" class="subtitle">Every LightGBM architecture is refitted before each forecast origin; only fully observed origins enter fitting or validation.</text>
+  <rect width="794" height="1123" fill="#ffffff"/>
+  <text x="397" y="39" class="title center">LightGBM Modelling Design</text>
 
-  <g transform="translate(760,42)">
-    <rect x="0" y="0" width="22" height="22" class="fit" rx="5"/><text x="31" y="16" class="legend">fit</text>
-    <rect x="94" y="0" width="22" height="22" class="validation" rx="5"/><text x="125" y="16" class="legend">validation / early stopping</text>
-    <rect x="326" y="0" width="22" height="22" class="forecast" rx="5"/><text x="357" y="16" class="legend">forecast</text>
+  <!-- Expanding rolling window -->
+  <rect x="24" y="60" width="746" height="450" rx="16" fill="#f8fafc"/>
+  <text x="44" y="89" class="section">1 · Expanding rolling window</text>
+  <g class="tiny">
+    <rect x="480" y="76" width="11" height="11" rx="3" class="training"/><text x="497" y="85">Training</text>
+    <rect x="555" y="76" width="11" height="11" rx="3" class="validation"/><text x="572" y="85">Validation</text>
+    <rect x="645" y="76" width="11" height="11" rx="3" class="test"/><text x="662" y="85">Test origins</text>
   </g>
 
-  <g transform="translate(55,145)">
-    <text x="0" y="32" class="row-label">Origin Q</text>
-    <text x="0" y="57" class="count">10 fit + 2 validation</text>
-    <g transform="translate(240,0)">
-      <rect x="0" y="0" width="64" height="64" class="fit outline"/><text x="32" y="32" class="box-label">H1</text>
-      <rect x="68" y="0" width="64" height="64" class="fit outline"/><text x="100" y="32" class="box-label">H2</text>
-      <rect x="136" y="0" width="64" height="64" class="fit outline"/><text x="168" y="32" class="box-label">H3</text>
-      <rect x="204" y="0" width="64" height="64" class="fit outline"/><text x="236" y="32" class="box-label">H4</text>
-      <rect x="272" y="0" width="64" height="64" class="fit outline"/><text x="304" y="32" class="box-label">H5</text>
-      <rect x="340" y="0" width="64" height="64" class="fit outline"/><text x="372" y="32" class="box-label">H6</text>
-      <rect x="408" y="0" width="64" height="64" class="fit outline"/><text x="440" y="32" class="box-label">H7</text>
-      <rect x="476" y="0" width="64" height="64" class="fit outline"/><text x="508" y="32" class="box-label">H8</text>
-      <rect x="544" y="0" width="64" height="64" class="fit outline"/><text x="576" y="32" class="box-label">H9</text>
-      <rect x="612" y="0" width="64" height="64" class="fit outline"/><text x="644" y="32" class="box-label">H10</text>
-      <rect x="680" y="0" width="64" height="64" class="validation outline"/><text x="712" y="32" class="box-label">H11</text>
-      <rect x="748" y="0" width="64" height="64" class="validation outline"/><text x="780" y="32" class="box-label">H12</text>
-      <rect x="830" y="0" width="84" height="64" class="forecast outline"/><text x="872" y="32" class="box-label">Q</text>
-    </g>
+  <path d="M67 127 V449" class="bus" marker-end="url(#arrow)"/>
+
+  <!-- Refit 1 -->
+  <circle cx="67" cy="127" r="6" fill="#172033"/>
+  <text x="42" y="131" class="label" text-anchor="end">Refit 1</text>
+  <rect x="100" y="108" width="300" height="27" rx="6" class="training"/>
+  <text x="250" y="126" class="tiny white bold center">Training · 48 · 03.03.25–26.01.26</text>
+  <rect x="400" y="108" width="70" height="27" rx="6" class="validation"/>
+  <text x="435" y="126" class="tiny white bold center">Val. · 4</text>
+  <rect x="470" y="108" width="220" height="27" rx="6" class="test"/>
+  <text x="580" y="126" class="tiny white bold center">O1–O4</text>
+  <g class="tiny center">
+    <circle cx="492" cy="151" r="4" class="test"/><text x="492" y="166">02.03.26</text>
+    <circle cx="548" cy="151" r="4" class="test"/><text x="548" y="166">09.03.26</text>
+    <circle cx="604" cy="151" r="4" class="test"/><text x="604" y="166">16.03.26</text>
+    <circle cx="660" cy="151" r="4" class="test"/><text x="660" y="166">23.03.26</text>
   </g>
 
-  <g transform="translate(55,275)">
-    <text x="0" y="32" class="row-label">Origin Q+28d</text>
-    <text x="0" y="57" class="count">11 fit + 2 validation</text>
-    <g transform="translate(240,0)">
-      <rect x="0" y="0" width="58" height="64" class="fit outline"/><text x="29" y="32" class="box-label">H1</text>
-      <rect x="62" y="0" width="58" height="64" class="fit outline"/><text x="91" y="32" class="box-label">H2</text>
-      <rect x="124" y="0" width="58" height="64" class="fit outline"/><text x="153" y="32" class="box-label">H3</text>
-      <rect x="186" y="0" width="58" height="64" class="fit outline"/><text x="215" y="32" class="box-label">H4</text>
-      <rect x="248" y="0" width="58" height="64" class="fit outline"/><text x="277" y="32" class="box-label">H5</text>
-      <rect x="310" y="0" width="58" height="64" class="fit outline"/><text x="339" y="32" class="box-label">H6</text>
-      <rect x="372" y="0" width="58" height="64" class="fit outline"/><text x="401" y="32" class="box-label">H7</text>
-      <rect x="434" y="0" width="58" height="64" class="fit outline"/><text x="463" y="32" class="box-label">H8</text>
-      <rect x="496" y="0" width="58" height="64" class="fit outline"/><text x="525" y="32" class="box-label">H9</text>
-      <rect x="558" y="0" width="58" height="64" class="fit outline"/><text x="587" y="32" class="box-label">H10</text>
-      <rect x="620" y="0" width="58" height="64" class="fit outline"/><text x="649" y="32" class="box-label">H11</text>
-      <rect x="682" y="0" width="58" height="64" class="validation outline"/><text x="711" y="32" class="box-label">H12</text>
-      <rect x="744" y="0" width="68" height="64" class="validation outline"/><text x="778" y="32" class="box-label">Q</text>
-      <rect x="830" y="0" width="84" height="64" class="forecast outline"/><text x="872" y="32" class="box-label">Q+28d</text>
-    </g>
+  <!-- Refit 2 -->
+  <circle cx="67" cy="201" r="6" fill="#172033"/>
+  <text x="42" y="205" class="label" text-anchor="end">Refit 2</text>
+  <rect x="100" y="182" width="320" height="27" rx="6" class="training"/>
+  <text x="260" y="200" class="tiny white bold center">Training · 52 · 03.03.25–23.02.26</text>
+  <rect x="420" y="182" width="70" height="27" rx="6" class="validation"/>
+  <text x="455" y="200" class="tiny white bold center">Val. · 4</text>
+  <rect x="490" y="182" width="220" height="27" rx="6" class="test"/>
+  <text x="600" y="200" class="tiny white bold center">O5–O8</text>
+  <g class="tiny center">
+    <circle cx="512" cy="225" r="4" class="test"/><text x="512" y="240">30.03.26</text>
+    <circle cx="568" cy="225" r="4" class="test"/><text x="568" y="240">06.04.26</text>
+    <circle cx="624" cy="225" r="4" class="test"/><text x="624" y="240">13.04.26</text>
+    <circle cx="680" cy="225" r="4" class="test"/><text x="680" y="240">20.04.26</text>
   </g>
 
-  <g transform="translate(55,405)">
-    <text x="0" y="32" class="row-label">Origin Q+56d</text>
-    <text x="0" y="57" class="count">12 fit + 2 validation</text>
-    <g transform="translate(240,0)">
-      <rect x="0" y="0" width="52" height="64" class="fit outline"/><text x="26" y="32" class="box-label">H1</text>
-      <rect x="56" y="0" width="52" height="64" class="fit outline"/><text x="82" y="32" class="box-label">H2</text>
-      <rect x="112" y="0" width="52" height="64" class="fit outline"/><text x="138" y="32" class="box-label">H3</text>
-      <rect x="168" y="0" width="52" height="64" class="fit outline"/><text x="194" y="32" class="box-label">H4</text>
-      <rect x="224" y="0" width="52" height="64" class="fit outline"/><text x="250" y="32" class="box-label">H5</text>
-      <rect x="280" y="0" width="52" height="64" class="fit outline"/><text x="306" y="32" class="box-label">H6</text>
-      <rect x="336" y="0" width="52" height="64" class="fit outline"/><text x="362" y="32" class="box-label">H7</text>
-      <rect x="392" y="0" width="52" height="64" class="fit outline"/><text x="418" y="32" class="box-label">H8</text>
-      <rect x="448" y="0" width="52" height="64" class="fit outline"/><text x="474" y="32" class="box-label">H9</text>
-      <rect x="504" y="0" width="52" height="64" class="fit outline"/><text x="530" y="32" class="box-label">H10</text>
-      <rect x="560" y="0" width="52" height="64" class="fit outline"/><text x="586" y="32" class="box-label">H11</text>
-      <rect x="616" y="0" width="52" height="64" class="fit outline"/><text x="642" y="32" class="box-label">H12</text>
-      <rect x="672" y="0" width="68" height="64" class="validation outline"/><text x="706" y="32" class="box-label">Q</text>
-      <rect x="744" y="0" width="68" height="64" class="validation outline"/><text x="778" y="32" class="box-label">Q+28d</text>
-      <rect x="830" y="0" width="84" height="64" class="forecast outline"/><text x="872" y="32" class="box-label">Q+56d</text>
-    </g>
+  <!-- Refit 3 -->
+  <circle cx="67" cy="275" r="6" fill="#172033"/>
+  <text x="42" y="279" class="label" text-anchor="end">Refit 3</text>
+  <rect x="100" y="256" width="340" height="27" rx="6" class="training"/>
+  <text x="270" y="274" class="tiny white bold center">Training · 56 · 03.03.25–23.03.26</text>
+  <rect x="440" y="256" width="70" height="27" rx="6" class="validation"/>
+  <text x="475" y="274" class="tiny white bold center">Val. · 4</text>
+  <rect x="510" y="256" width="220" height="27" rx="6" class="test"/>
+  <text x="620" y="274" class="tiny white bold center">O9–O12</text>
+  <g class="tiny center">
+    <circle cx="532" cy="299" r="4" class="test"/><text x="532" y="314">27.04.26</text>
+    <circle cx="588" cy="299" r="4" class="test"/><text x="588" y="314">04.05.26</text>
+    <circle cx="644" cy="299" r="4" class="test"/><text x="644" y="314">11.05.26</text>
+    <circle cx="700" cy="299" r="4" class="test"/><text x="700" y="314">18.05.26</text>
   </g>
 
-  <line x1="55" y1="510" x2="1345" y2="510" stroke="#cbd5e1" stroke-width="2"/>
-  <text x="55" y="548" class="panel-title">Evaluation cadence and forecast horizon</text>
-  <text x="55" y="577" class="panel-subtitle">Historical and evaluation origins are spaced 28 days apart; every origin predicts the next seven calendar days.</text>
-
-  <g transform="translate(0,45)">
-    <line x1="240" y1="625" x2="1210" y2="625" stroke="#94a3b8" stroke-width="3"/>
-    <polygon points="1210,625 1196,617 1196,633" fill="#94a3b8"/>
-
-    <line x1="350" y1="590" x2="910" y2="590" stroke="#334155" stroke-width="2"/>
-    <polygon points="350,590 364,582 364,598" fill="#334155"/>
-    <polygon points="910,590 896,582 896,598" fill="#334155"/>
-    <text x="630" y="579" class="row-label" text-anchor="middle">28 days between origins</text>
-
-    <rect x="350" y="608" width="140" height="34" class="forecast" rx="7"/>
-    <text x="420" y="626" class="box-label">Q … Q+6</text>
-    <rect x="910" y="608" width="140" height="34" class="forecast" rx="7"/>
-    <text x="980" y="626" class="box-label">Q+28 … Q+34</text>
-
-    <line x1="350" y1="654" x2="490" y2="654" stroke="#16a34a" stroke-width="2"/>
-    <line x1="350" y1="648" x2="350" y2="660" stroke="#16a34a" stroke-width="2"/>
-    <line x1="490" y1="648" x2="490" y2="660" stroke="#16a34a" stroke-width="2"/>
-    <text x="420" y="681" class="count" text-anchor="middle">7-day forecast window</text>
-
-    <line x1="910" y1="654" x2="1050" y2="654" stroke="#16a34a" stroke-width="2"/>
-    <line x1="910" y1="648" x2="910" y2="660" stroke="#16a34a" stroke-width="2"/>
-    <line x1="1050" y1="648" x2="1050" y2="660" stroke="#16a34a" stroke-width="2"/>
-    <text x="980" y="681" class="count" text-anchor="middle">7-day forecast window</text>
+  <!-- Refit 4 -->
+  <circle cx="67" cy="349" r="6" fill="#172033"/>
+  <text x="42" y="353" class="label" text-anchor="end">Refit 4</text>
+  <rect x="100" y="330" width="360" height="27" rx="6" class="training"/>
+  <text x="280" y="348" class="tiny white bold center">Training · 60 · 03.03.25–20.04.26</text>
+  <rect x="460" y="330" width="70" height="27" rx="6" class="validation"/>
+  <text x="495" y="348" class="tiny white bold center">Val. · 4</text>
+  <rect x="530" y="330" width="200" height="27" rx="6" class="test"/>
+  <text x="630" y="348" class="tiny white bold center">O13–O16</text>
+  <g class="tiny center">
+    <circle cx="552" cy="373" r="4" class="test"/><text x="552" y="388">25.05.26</text>
+    <circle cx="602" cy="373" r="4" class="test"/><text x="602" y="388">01.06.26</text>
+    <circle cx="652" cy="373" r="4" class="test"/><text x="652" y="388">08.06.26</text>
+    <circle cx="702" cy="373" r="4" class="test"/><text x="702" y="388">15.06.26</text>
   </g>
 
-  <line x1="55" y1="760" x2="1345" y2="760" stroke="#cbd5e1" stroke-width="2"/>
-  <text x="55" y="800" class="panel-title">How the seven daily forecasts are produced at origin Q</text>
-  <text x="55" y="829" class="panel-subtitle">One direct feature row is created per target day. Demand-history features stay anchored at Q; horizon and calendar features change with the target day.</text>
-
-  <g transform="translate(55,865)">
-    <rect x="0" y="0" width="300" height="278" class="history" rx="14"/>
-    <text x="24" y="34" class="feature-title">Shared pre-origin features</text>
-    <text x="24" y="66" class="feature-text">known when Q begins</text>
-    <line x1="24" y1="82" x2="276" y2="82" stroke="#64748b" stroke-width="1"/>
-    <text x="24" y="111" class="feature-text">Demand observed through Q−1</text>
-    <text x="24" y="139" class="feature-text">• lags 1, 7, 14</text>
-    <text x="24" y="165" class="feature-text">• rolling means / demand rate</text>
-    <text x="24" y="191" class="feature-text">• ADI, CV², zero share</text>
-    <text x="24" y="217" class="feature-text">• maturity and cross-store context</text>
-    <text x="24" y="251" class="feature-text">Reused for all seven target rows</text>
-
-    <line x1="300" y1="139" x2="350" y2="139" stroke="#64748b" stroke-width="3"/>
-    <line x1="350" y1="17" x2="350" y2="263" stroke="#64748b" stroke-width="3"/>
-    <polygon points="350,22 343,36 357,36" fill="#64748b"/>
-    <polygon points="350,263 343,249 357,249" fill="#64748b"/>
-    <g stroke="#64748b" stroke-width="2">
-      <line x1="350" y1="17" x2="385" y2="17"/>
-      <line x1="350" y1="58" x2="385" y2="58"/>
-      <line x1="350" y1="99" x2="385" y2="99"/>
-      <line x1="350" y1="140" x2="385" y2="140"/>
-      <line x1="350" y1="181" x2="385" y2="181"/>
-      <line x1="350" y1="222" x2="385" y2="222"/>
-      <line x1="350" y1="263" x2="385" y2="263"/>
-    </g>
-
-    <g transform="translate(385,0)">
-      <rect x="0" y="0" width="295" height="34" class="target-feature" rx="7"/>
-      <text x="15" y="22" class="day-text">target Q · h=1 · calendar for Q</text>
-      <rect x="710" y="0" width="155" height="34" class="forecast" rx="7"/>
-      <text x="787" y="18" class="prediction-text">forecast ŷ(Q)</text>
-
-      <rect x="0" y="41" width="295" height="34" class="target-feature" rx="7"/>
-      <text x="15" y="63" class="day-text">target Q+1d · h=2 · calendar for Q+1d</text>
-      <rect x="710" y="41" width="155" height="34" class="forecast" rx="7"/>
-      <text x="787" y="59" class="prediction-text">forecast ŷ(Q+1d)</text>
-
-      <rect x="0" y="82" width="295" height="34" class="target-feature" rx="7"/>
-      <text x="15" y="104" class="day-text">target Q+2d · h=3 · calendar for Q+2d</text>
-      <rect x="710" y="82" width="155" height="34" class="forecast" rx="7"/>
-      <text x="787" y="100" class="prediction-text">forecast ŷ(Q+2d)</text>
-
-      <rect x="0" y="123" width="295" height="34" class="target-feature" rx="7"/>
-      <text x="15" y="145" class="day-text">target Q+3d · h=4 · calendar for Q+3d</text>
-      <rect x="710" y="123" width="155" height="34" class="forecast" rx="7"/>
-      <text x="787" y="141" class="prediction-text">forecast ŷ(Q+3d)</text>
-
-      <rect x="0" y="164" width="295" height="34" class="target-feature" rx="7"/>
-      <text x="15" y="186" class="day-text">target Q+4d · h=5 · calendar for Q+4d</text>
-      <rect x="710" y="164" width="155" height="34" class="forecast" rx="7"/>
-      <text x="787" y="182" class="prediction-text">forecast ŷ(Q+4d)</text>
-
-      <rect x="0" y="205" width="295" height="34" class="target-feature" rx="7"/>
-      <text x="15" y="227" class="day-text">target Q+5d · h=6 · calendar for Q+5d</text>
-      <rect x="710" y="205" width="155" height="34" class="forecast" rx="7"/>
-      <text x="787" y="223" class="prediction-text">forecast ŷ(Q+5d)</text>
-
-      <rect x="0" y="246" width="295" height="34" class="target-feature" rx="7"/>
-      <text x="15" y="268" class="day-text">target Q+6d · h=7 · calendar for Q+6d</text>
-      <rect x="710" y="246" width="155" height="34" class="forecast" rx="7"/>
-      <text x="787" y="264" class="prediction-text">forecast ŷ(Q+6d)</text>
-
-      <rect x="330" y="0" width="330" height="280" class="model" rx="12"/>
-      <text x="495" y="118" class="model-text">origin-specific LightGBM</text>
-      <text x="495" y="144" class="model-text">shared history + target-day features</text>
-      <text x="495" y="176" class="note" text-anchor="middle">7 direct predictions</text>
-      <text x="495" y="199" class="note" text-anchor="middle">no prediction is fed into the next row</text>
-
-      <g stroke="#64748b" stroke-width="2" fill="#64748b">
-        <line x1="295" y1="17" x2="330" y2="17"/><polygon points="330,17 319,11 319,23"/>
-        <line x1="660" y1="17" x2="710" y2="17"/><polygon points="710,17 699,11 699,23"/>
-        <line x1="295" y1="58" x2="330" y2="58"/><polygon points="330,58 319,52 319,64"/>
-        <line x1="660" y1="58" x2="710" y2="58"/><polygon points="710,58 699,52 699,64"/>
-        <line x1="295" y1="99" x2="330" y2="99"/><polygon points="330,99 319,93 319,105"/>
-        <line x1="660" y1="99" x2="710" y2="99"/><polygon points="710,99 699,93 699,105"/>
-        <line x1="295" y1="140" x2="330" y2="140"/><polygon points="330,140 319,134 319,146"/>
-        <line x1="660" y1="140" x2="710" y2="140"/><polygon points="710,140 699,134 699,146"/>
-        <line x1="295" y1="181" x2="330" y2="181"/><polygon points="330,181 319,175 319,187"/>
-        <line x1="660" y1="181" x2="710" y2="181"/><polygon points="710,181 699,175 699,187"/>
-        <line x1="295" y1="222" x2="330" y2="222"/><polygon points="330,222 319,216 319,228"/>
-        <line x1="660" y1="222" x2="710" y2="222"/><polygon points="710,222 699,216 699,228"/>
-        <line x1="295" y1="263" x2="330" y2="263"/><polygon points="330,263 319,257 319,269"/>
-        <line x1="660" y1="263" x2="710" y2="263"/><polygon points="710,263 699,257 699,269"/>
-      </g>
-    </g>
+  <!-- Refit 5 -->
+  <circle cx="67" cy="423" r="6" fill="#172033"/>
+  <text x="42" y="427" class="label" text-anchor="end">Refit 5</text>
+  <rect x="100" y="404" width="380" height="27" rx="6" class="training"/>
+  <text x="290" y="422" class="tiny white bold center">Training · 64 · 03.03.25–18.05.26</text>
+  <rect x="480" y="404" width="70" height="27" rx="6" class="validation"/>
+  <text x="515" y="422" class="tiny white bold center">Val. · 4</text>
+  <rect x="550" y="404" width="180" height="27" rx="6" class="test"/>
+  <text x="640" y="422" class="tiny white bold center">O17–O20</text>
+  <g class="tiny center">
+    <circle cx="570" cy="447" r="4" class="test"/><text x="570" y="462">22.06.26</text>
+    <circle cx="615" cy="447" r="4" class="test"/><text x="615" y="462">29.06.26</text>
+    <circle cx="660" cy="447" r="4" class="test"/><text x="660" y="462">06.07.26</text>
+    <circle cx="705" cy="447" r="4" class="test"/><text x="705" y="462">13.07.26</text>
   </g>
 
-  <text x="55" y="1185" class="note">At Q+28 the model is refitted: the completed Q…Q+6 window is now observed, the two-origin validation window rolls forward, and a new seven-day forecast is produced.</text>
+  <path d="M67 474 V493 H397" class="connector"/>
+  <rect x="319" y="474" width="156" height="25" rx="12" fill="#172033"/>
+  <text x="397" y="491" class="tiny white bold center">7-day forecast per origin</text>
+
+  <!-- Forecast generation -->
+  <rect x="24" y="530" width="746" height="568" rx="16" fill="#f8fafc"/>
+  <text x="44" y="559" class="section">2 · Forecast generation</text>
+
+  <rect x="55" y="579" width="100" height="40" rx="8" class="box"/>
+  <text x="105" y="603" class="label center">Origin</text>
+  <path d="M160 599 H191" class="connector"/>
+  <rect x="200" y="579" width="140" height="40" rx="8" class="box"/>
+  <text x="270" y="603" class="label center">Feature snapshot</text>
+  <path d="M345 599 H376" class="connector"/>
+  <rect x="385" y="579" width="150" height="40" rx="8" class="box"/>
+  <text x="460" y="597" class="label center">7 target-day rows</text>
+  <text x="460" y="611" class="tiny center">D+1 · D+2 · D+3 · D+4 · D+5 · D+6 · D+7</text>
+  <path d="M540 599 H565 V1020" class="bus"/>
+
+  <!-- Architecture A -->
+  <rect x="48" y="641" width="680" height="67" rx="12" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.7" filter="url(#shadow)"/>
+  <text x="64" y="665" class="card-title">A · Daily direct L2</text>
+  <path d="M565 675 H331" class="bus"/>
+  <rect x="222" y="675" width="92" height="25" rx="6" class="box"/><text x="268" y="692" class="tiny bold center">7 feature rows</text>
+  <path d="M319 688 H350" class="connector"/>
+  <rect x="359" y="675" width="80" height="25" rx="6" fill="#dbeafe" stroke="#3b82f6"/><text x="399" y="692" class="tiny bold center">L2</text>
+  <path d="M444 688 H475" class="connector"/>
+  <rect x="484" y="675" width="95" height="25" rx="6" fill="#2563eb"/><text x="531" y="692" class="tiny white bold center">ŷ₁ … ŷ₇</text>
+  <path d="M579 688 H740" class="bus"/>
+
+  <!-- Architecture B -->
+  <rect x="48" y="718" width="680" height="67" rx="12" fill="#faf5ff" stroke="#a855f7" stroke-width="1.7" filter="url(#shadow)"/>
+  <text x="64" y="742" class="card-title">B · Daily direct Tweedie</text>
+  <path d="M565 752 H331" class="bus"/>
+  <rect x="222" y="752" width="92" height="25" rx="6" class="box"/><text x="268" y="769" class="tiny bold center">7 feature rows</text>
+  <path d="M319 765 H350" class="connector"/>
+  <rect x="359" y="752" width="80" height="25" rx="6" fill="#f3e8ff" stroke="#a855f7"/><text x="399" y="769" class="tiny bold center">Tweedie</text>
+  <path d="M444 765 H475" class="connector"/>
+  <rect x="484" y="752" width="95" height="25" rx="6" fill="#a855f7"/><text x="531" y="769" class="tiny white bold center">ŷ₁ … ŷ₇</text>
+  <path d="M579 765 H740" class="bus"/>
+
+  <!-- Architecture C -->
+  <rect x="48" y="795" width="680" height="111" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="2.3" filter="url(#shadow)"/>
+  <text x="64" y="819" class="card-title">C · Two-stage LightGBM</text>
+  <rect x="589" y="804" width="122" height="22" rx="11" fill="#16a34a"/><text x="650" y="819" class="tiny white bold center">SELECTED MODEL</text>
+  <path d="M565 850 H222" class="bus"/>
+  <rect x="150" y="838" width="82" height="25" rx="6" class="box"/><text x="191" y="855" class="tiny bold center">7 feature rows</text>
+  <path d="M237 850 H270 V828 H297" class="connector"/>
+  <path d="M237 850 H270 V872 H297" class="connector"/>
+  <rect x="306" y="816" width="123" height="25" rx="6" class="box"/><text x="367" y="833" class="tiny bold center">Binary · p(y &gt; 0)</text>
+  <rect x="306" y="860" width="123" height="25" rx="6" class="box"/><text x="367" y="877" class="tiny bold center">Gamma · E(y | y &gt; 0)</text>
+  <path d="M434 828 H465 V847" class="connector"/>
+  <path d="M434 872 H465 V853" class="connector"/>
+  <circle cx="482" cy="850" r="18" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/><text x="482" y="856" class="card-title center">×</text>
+  <path d="M501 850 H524" class="connector"/>
+  <rect x="533" y="838" width="92" height="25" rx="6" fill="#16a34a"/><text x="579" y="855" class="tiny white bold center">ŷ₁ … ŷ₇</text>
+  <path d="M625 850 H740" class="bus"/>
+
+  <!-- Architecture D -->
+  <rect x="48" y="916" width="680" height="91" rx="12" fill="#fff7ed" stroke="#f97316" stroke-width="1.7" filter="url(#shadow)"/>
+  <text x="64" y="940" class="card-title">D · Weekly total + weekday allocation</text>
+  <path d="M565 962 H157" class="bus"/>
+  <rect x="150" y="950" width="94" height="25" rx="6" class="box"/><text x="197" y="967" class="tiny bold center">Weekly features</text>
+  <path d="M249 962 H276" class="connector"/>
+  <rect x="285" y="950" width="105" height="25" rx="6" fill="#ffedd5" stroke="#f97316"/><text x="337" y="967" class="tiny bold center">Tweedie total</text>
+  <path d="M395 962 H422" class="connector"/>
+  <rect x="431" y="950" width="120" height="25" rx="6" class="box"/><text x="491" y="967" class="tiny bold center">Weekday allocation</text>
+  <path d="M556 962 H583" class="connector"/>
+  <rect x="592" y="950" width="95" height="25" rx="6" fill="#f97316"/><text x="639" y="967" class="tiny white bold center">ŷ₁ … ŷ₇</text>
+  <path d="M687 962 H740" class="bus"/>
+
+  <!-- Shared seven-day output -->
+  <path d="M740 688 V1028 H690" class="connector"/>
+  <text x="397" y="1039" class="card-title center">7-day forecast</text>
+  <g>
+    <rect x="62" y="1050" width="88" height="34" rx="6" fill="#172033"/><text x="106" y="1065" class="tiny white bold center">Day 1</text><text x="106" y="1078" class="tiny white center">ŷ₁</text>
+    <rect x="159" y="1050" width="88" height="34" rx="6" fill="#172033"/><text x="203" y="1065" class="tiny white bold center">Day 2</text><text x="203" y="1078" class="tiny white center">ŷ₂</text>
+    <rect x="256" y="1050" width="88" height="34" rx="6" fill="#172033"/><text x="300" y="1065" class="tiny white bold center">Day 3</text><text x="300" y="1078" class="tiny white center">ŷ₃</text>
+    <rect x="353" y="1050" width="88" height="34" rx="6" fill="#172033"/><text x="397" y="1065" class="tiny white bold center">Day 4</text><text x="397" y="1078" class="tiny white center">ŷ₄</text>
+    <rect x="450" y="1050" width="88" height="34" rx="6" fill="#172033"/><text x="494" y="1065" class="tiny white bold center">Day 5</text><text x="494" y="1078" class="tiny white center">ŷ₅</text>
+    <rect x="547" y="1050" width="88" height="34" rx="6" fill="#172033"/><text x="591" y="1065" class="tiny white bold center">Day 6</text><text x="591" y="1078" class="tiny white center">ŷ₆</text>
+    <rect x="644" y="1050" width="88" height="34" rx="6" fill="#172033"/><text x="688" y="1065" class="tiny white bold center">Day 7</text><text x="688" y="1078" class="tiny white center">ŷ₇</text>
+  </g>
 </svg>
