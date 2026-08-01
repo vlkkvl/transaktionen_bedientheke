@@ -24,6 +24,8 @@ from src.data.cleaning.rules import (
     BINARY_FLAG_COLUMNS,
     DROP_COLUMNS,
     DUPLICATE_KEY_COLS,
+    FCM_COL,
+    PSEUDO_COL,
     duplicate_keys_sql,
     fcm_filter_condition,
     pseudo_filter_condition,
@@ -150,8 +152,10 @@ def aggregate_select_sql(columns: list[str], read_expr: str) -> str:
             END AS {ident("ABVERKAUFTE_MENGE_KG")},
             SUM(COALESCE({ident("UMS_VK_WERT")}, 0.0))::DOUBLE AS {ident("UMS_VK_WERT")},
             SUM(COALESCE({ident("GRAMM_BON")}, 0.0))::DOUBLE AS {ident("GRAMM_BON")},
-            BOOL_OR({fcm_filter_condition()}) AS {ident("is_fcm")},
-            BOOL_OR({pseudo_filter_condition()}) AS {ident("is_pseudo")},
+            BOOL_OR({fcm_filter_condition(columns=columns)})
+                AS {ident(FCM_COL)},
+            BOOL_OR({pseudo_filter_condition(columns=columns)})
+                AS {ident(PSEUDO_COL)},
             {flag_select},
             {static_select}
         FROM cleaned

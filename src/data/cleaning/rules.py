@@ -1,6 +1,7 @@
 """Shared transaction cleaning rules."""
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 
 from src.data.common import ident, read_parquet_expr, sql_literal
@@ -13,6 +14,8 @@ UMS_MENGE_COL = "UMS_MENGE"
 ARTIKEL_INHALT_COL = "ARTIKEL_INHALT"
 GEWICHT_FLAG_COL = "GEWICHT_FLAG"
 WGR_ID_COL = "WGR_ID"
+FCM_COL = "is_fcm"
+PSEUDO_COL = "is_pseudo"
 
 FCM_RULE = False
 EXTERNAL_PRODUCT_RULE = True
@@ -3737,6 +3740,8 @@ BINARY_FLAG_COLUMNS = {
     "STORNOART",
     "STORNOZEILE",
     "NEGATIVARTIKEL",
+    FCM_COL,
+    PSEUDO_COL,
 }
 
 
@@ -3754,26 +3759,51 @@ def excluded_gramm_bon_article_ids_sql() -> str:
     )
 
 
-def fcm_filter_condition(alias: str | None = None) -> str:
+def existing_flag_condition(flag_col: str, alias: str | None = None) -> str:
+    """Return a null-safe Boolean condition for an existing product flag."""
+    col = ident(flag_col)
+    if alias:
+        col = f"{alias}.{col}"
+    return f"COALESCE(TRY_CAST({col} AS BOOLEAN), FALSE)"
+
+
+def fcm_filter_condition(
+    alias: str | None = None,
+    *,
+    columns: Collection[str] | None = None,
+) -> str:
+    """Use an existing FCM marker, otherwise identify FCM products by ID."""
+    if columns is not None and FCM_COL in columns:
+        return existing_flag_condition(FCM_COL, alias)
     col = ident(ARTICLE_ID_COL)
     if alias:
         col = f"{alias}.{col}"
     return f"{col} IN ({allowed_fcm_article_ids_sql()})"
 
 
-def pseudo_filter_condition(alias: str | None = None) -> str:
-    """Return the SQL condition used to populate the is_pseudo marker."""
+def pseudo_filter_condition(
+    alias: str | None = None,
+    *,
+    columns: Collection[str] | None = None,
+) -> str:
+    """Use an existing pseudo marker, otherwise identify products by ID."""
+    if columns is not None and PSEUDO_COL in columns:
+        return existing_flag_condition(PSEUDO_COL, alias)
     col = ident(ARTICLE_ID_COL)
     if alias:
         col = f"{alias}.{col}"
     return f"{col} IN ({pseudo_article_ids_sql()})"
 
 
-def fcm_or_pseudo_filter_condition(alias: str | None = None) -> str:
+def fcm_or_pseudo_filter_condition(
+    alias: str | None = None,
+    *,
+    columns: Collection[str] | None = None,
+) -> str:
     """Keep known FCM and pseudo products, excluding external products."""
     return (
-        f"(({fcm_filter_condition(alias)}) "
-        f"OR ({pseudo_filter_condition(alias)}))"
+        f"(({fcm_filter_condition(alias, columns=columns)}) "
+        f"OR ({pseudo_filter_condition(alias, columns=columns)}))"
     )
 
 
@@ -3855,6 +3885,7 @@ def transaction_filter_condition(
     alias: str | None = None,
     *,
     include_fcm: bool | None = None,
+    columns: Collection[str] | None = None,
 ) -> str:
     (
         fcm_rule,
@@ -3867,9 +3898,11 @@ def transaction_filter_condition(
     conditions.append(f"({ums_menge_filter_condition(alias)})")
     conditions.append(f"({artikel_bez_filter_condition(alias)})")
     if fcm_rule:
-        conditions.append(f"({fcm_filter_condition(alias)})")
+        conditions.append(f"({fcm_filter_condition(alias, columns=columns)})")
     if external_product_rule:
-        conditions.append(f"({fcm_or_pseudo_filter_condition(alias)})")
+        conditions.append(
+            f"({fcm_or_pseudo_filter_condition(alias, columns=columns)})"
+        )
     if weight_rule:
         conditions.append(f"({weight_filter_condition(alias)})")
     if wgr_rule:
@@ -3889,11 +3922,15 @@ def filtered_transactions_expr(
     *,
     filename: bool = False,
     include_fcm: bool | None = None,
+    columns: Collection[str] | None = None,
 ) -> str:
     return f"""
         (
             SELECT *
             FROM {read_parquet_expr(path, filename=filename)}
-            WHERE {transaction_filter_condition(include_fcm=include_fcm)}
+            WHERE {transaction_filter_condition(
+                include_fcm=include_fcm,
+                columns=columns,
+            )}
         )
         """

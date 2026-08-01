@@ -1,6 +1,7 @@
-"""Filter pooled transactions, tag FCM rows, and define the goal variable."""
+"""Filter transactions, preserve or add product tags, and define the target."""
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 import sys
 from time import perf_counter
@@ -22,7 +23,9 @@ from src.data.common import (
     step,
 )
 from src.data.cleaning.rules import (
+    FCM_COL,
     GEWICHT_FLAG_COL,
+    PSEUDO_COL,
     fcm_filter_condition,
     gewicht_flag_expression_sql,
     pseudo_filter_condition,
@@ -33,8 +36,6 @@ IN_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year_filtered"
 
 TARGET_COL = "ABVERKAUFTE_MENGE_KG"
-FCM_COL = "is_fcm"
-PSEUDO_COL = "is_pseudo"
 GEWICHT_FLAG = GEWICHT_FLAG_COL
 GEWICHTSARTIKEL = "GEWICHTSARTIKEL"
 ARTIKEL_INHALT = "ARTIKEL_INHALT"
@@ -86,10 +87,6 @@ def output_select_sql(columns: list[str]) -> str:
     for col in columns:
         if col == TARGET_COL:
             expressions.append(target_expr)
-        elif col == FCM_COL:
-            expressions.append(fcm_expr)
-        elif col == PSEUDO_COL:
-            expressions.append(pseudo_expr)
         elif col == GEWICHT_FLAG:
             expressions.append(weight_flag_expr)
         else:
@@ -105,12 +102,18 @@ def output_select_sql(columns: list[str]) -> str:
     return ",\n            ".join(expressions)
 
 
-def filtered_source_expr_sql(read_expr: str) -> str:
+def filtered_source_expr_sql(
+    read_expr: str,
+    columns: Collection[str] | None = None,
+) -> str:
     return f"""
         (
             SELECT *
             FROM {read_expr}
-            WHERE {transaction_filter_condition(include_fcm=False)}
+            WHERE {transaction_filter_condition(
+                include_fcm=False,
+                columns=columns,
+            )}
         )
         """
 
@@ -126,7 +129,7 @@ def write_with_goal_variable(
         out_path.unlink()
 
     read_expr = read_parquet_expr(input_path)
-    filtered_expr = filtered_source_expr_sql(read_expr)
+    filtered_expr = filtered_source_expr_sql(read_expr, columns)
     rows_in = con.execute(f"SELECT COUNT(*) FROM {read_expr}").fetchone()[0]
     con.execute(
         f"""

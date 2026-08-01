@@ -235,3 +235,5 @@ raw/
 .idea/
 
 .tmp/
+
+reports/results/

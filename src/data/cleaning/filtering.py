@@ -12,7 +12,13 @@ from time import perf_counter
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from src.data.common import ROOT, configure_duckdb, read_parquet_expr, step
+from src.data.common import (
+    ROOT,
+    columns_for_expr,
+    configure_duckdb,
+    read_parquet_expr,
+    step,
+)
 from src.data.cleaning.rules import (
     ALLOWED_FCM_ARTICLE_IDS,
     ARTICLE_ID_COL,
@@ -67,6 +73,7 @@ def main() -> None:
 
     con = configure_duckdb()
     read_expr = read_parquet_expr(IN_GLOB)
+    columns = columns_for_expr(con, read_expr)
 
     print(f"Reading transactions from {IN_DIR}")
     print(f"FCM_RULE: {FCM_RULE}")
@@ -132,7 +139,7 @@ def main() -> None:
     if FCM_RULE:
         previous_condition = current_condition
         previous_count = current_count
-        fcm_condition = fcm_filter_condition()
+        fcm_condition = fcm_filter_condition(columns=columns)
         current_condition = combine_conditions(previous_condition, fcm_condition)
         current_count = count_rows(con, read_expr, current_condition)
         fcm_rows_removed = previous_count - current_count
@@ -152,7 +159,7 @@ def main() -> None:
     if EXTERNAL_PRODUCT_RULE:
         previous_condition = current_condition
         previous_count = current_count
-        product_condition = fcm_or_pseudo_filter_condition()
+        product_condition = fcm_or_pseudo_filter_condition(columns=columns)
         current_condition = combine_conditions(previous_condition, product_condition)
         current_count = count_rows(con, read_expr, current_condition)
         external_rows_removed = previous_count - current_count
@@ -231,7 +238,11 @@ def main() -> None:
         ).fetchall()
 
     kept = current_count
-    shared_kept = count_rows(con, read_expr, transaction_filter_condition())
+    shared_kept = count_rows(
+        con,
+        read_expr,
+        transaction_filter_condition(columns=columns),
+    )
     if kept != shared_kept:
         raise RuntimeError(
             "Sequential filter report does not match shared transaction filter: "
