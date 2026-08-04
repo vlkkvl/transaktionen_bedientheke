@@ -31,6 +31,8 @@ from src.data.cleaning.rules import (
     FCM_RULE,
     GRAMM_BON_RULE,
     MAX_TRANSACTION_DATE,
+    MARKET_ID_COL,
+    MARKETS_FILE,
     MIN_UMS_MENGE,
     MIN_TRANSACTION_DATE,
     PSEUDO_ARTICLE_IDS,
@@ -40,6 +42,8 @@ from src.data.cleaning.rules import (
     WGR_ID_COL,
     WGR_RULE,
     artikel_bez_filter_condition,
+    closed_market_filter_condition,
+    closed_market_ids,
     fcm_filter_condition,
     fcm_or_pseudo_filter_condition,
     gramm_bon_filter_condition,
@@ -97,6 +101,10 @@ def main() -> None:
         f"Excluding {ARTIKEL_BEZ_COL} values: "
         f"{sorted(EXCLUDED_ARTIKEL_BEZ_VALUES)}"
     )
+    print(
+        f"Excluding closed {MARKET_ID_COL} values from {MARKETS_FILE}: "
+        f"{list(closed_market_ids())}"
+    )
     print(f"GRAMM_BON_RULE: {GRAMM_BON_RULE}")
     if GRAMM_BON_RULE:
         print(
@@ -133,6 +141,14 @@ def main() -> None:
     current_count = count_rows(con, read_expr, current_condition)
     artikel_bez_removed = previous_count - current_count
     artikel_bez_remaining = current_count
+
+    previous_condition = current_condition
+    previous_count = current_count
+    market_condition = closed_market_filter_condition()
+    current_condition = combine_conditions(previous_condition, market_condition)
+    current_count = count_rows(con, read_expr, current_condition)
+    closed_market_removed = previous_count - current_count
+    closed_market_remaining = current_count
 
     fcm_removed = None
     fcm_remaining = None
@@ -265,6 +281,10 @@ def main() -> None:
     print(
         f"  {ARTIKEL_BEZ_COL} filter: removed {artikel_bez_removed:,} "
         f"after previous filters, remaining {artikel_bez_remaining:,}"
+    )
+    print(
+        f"  Closed-market filter: removed {closed_market_removed:,} "
+        f"after previous filters, remaining {closed_market_remaining:,}"
     )
     if fcm_removed is None:
         print("  FCM filter: disabled")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+import warnings
 
 import duckdb
 import numpy as np
@@ -15,6 +16,7 @@ from src.data.preparation.discover_sparse_regions import (
     apply_exclusion_flags,
     assign_regions,
     materialize_filtered_transactions,
+    warn_for_missing_sparse_scale_outliers,
 )
 
 
@@ -88,6 +90,19 @@ class SparseRegionDiscoveryTest(unittest.TestCase):
             flagged.loc[outlier_id, "region"], "pseudo_890_high_velocity"
         )
         self.assertFalse(flagged.loc[1, "exclude_from_daily"])
+
+    def test_missing_configured_outliers_warn_without_failing(self) -> None:
+        present_id = next(iter(PSEUDO_890_SPARSE_SCALE_OUTLIER_IDS))
+        expected_missing = PSEUDO_890_SPARSE_SCALE_OUTLIER_IDS - {present_id}
+        assignments = pd.DataFrame({"ARTIKEL_ID": [present_id, 1]})
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            missing = warn_for_missing_sparse_scale_outliers(assignments)
+
+        self.assertEqual(missing, expected_missing)
+        self.assertEqual(len(caught), 1)
+        self.assertIn(str(sorted(expected_missing)), str(caught[0].message))
 
     def test_filtered_output_uses_materialized_product_ids(self) -> None:
         with TemporaryDirectory() as temporary_directory:

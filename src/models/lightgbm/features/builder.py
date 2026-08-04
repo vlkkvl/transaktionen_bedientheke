@@ -34,6 +34,7 @@ WARENEINGAENGE_FEATURES_PATH = (
     ROOT / "data" / "interim" / "wareneingaenge" / "wareneingaenge_year_*.parquet"
 )
 MIN_COMPLETED_GAPS_FOR_P90 = 10
+MAX_EVENT_OFFSET_DAYS = 10
 FEATURE_ORIGIN_BATCH_SIZE = 4
 REMOVED_FEATURE_COLUMNS = frozenset({"lag_364", "lag_371"})
 
@@ -200,232 +201,335 @@ FEATURE_COLUMNS = (
 )
 
 FEATURE_DESCRIPTIONS = {
-    "ARTIKEL_ID": "Article identifier copied from the target series and encoded categorically.",
-    "MARKT_ID": "Store identifier copied from the target series and encoded categorically.",
+    "ARTIKEL_ID": (
+        "Article identifier of the forecast series; encoded as a categorical feature."
+    ),
+    "MARKT_ID": (
+        "Store identifier of the forecast series; encoded as a categorical feature."
+    ),
     "sourcing_group": (
-        "Series-level sourcing group derived during daily-row preparation, such as "
-        "FCM or Pseudo, and encoded categorically."
+        "Sourcing group assigned to the article-store series during daily-row "
+        "preparation, such as FCM or Pseudo; encoded as a categorical feature."
     ),
     "category_id": (
-        "Product-category identifier copied from the target series and encoded "
-        "categorically."
+        "Product-category identifier of the forecast series; encoded as a categorical "
+        "feature."
     ),
     "target_weekday": (
-        "ISO weekday extracted from the forecast target date, with Monday equal to 1 "
-        "and Sunday equal to 7."
+        "ISO weekday of the forecast target date (Monday = 1, Sunday = 7); encoded "
+        "as a categorical feature."
     ),
-    "iso_week": "ISO calendar-week number extracted from the forecast target date.",
-    "month": "Calendar-month number extracted from the forecast target date.",
+    "iso_week": (
+        "ISO week number of the forecast target date; encoded as a categorical feature."
+    ),
+    "month": (
+        "Calendar-month number of the forecast target date (January = 1); encoded as "
+        "a categorical feature."
+    ),
     "closed_days_next_1": (
-        "Number of store-closed dates from one day after the target through one day "
-        "after the target."
+        "Indicator that the store is closed on target + 1 calendar day. A store-date "
+        "is closed when no article row at that store is active; a missing store-date "
+        "is treated as not closed."
     ),
     "closed_days_next_2": (
-        "Number of store-closed dates from one day after the target through two days "
-        "after the target."
+        "Count of closed store-dates in the two calendar dates target + 1 through "
+        "target + 2. A date is closed when no article row at the store is active; "
+        "missing store-dates do not increase the count."
     ),
     "closed_days_next_3": (
-        "Number of store-closed dates from one day after the target through three days "
-        "after the target."
+        "Count of closed store-dates in the three calendar dates target + 1 through "
+        "target + 3. A date is closed when no article row at the store is active; "
+        "missing store-dates do not increase the count."
     ),
     "closed_days_prev_1": (
-        "Number of store-closed dates from one day before the target through the day "
-        "before the target."
+        "Indicator that the store is closed on target - 1 calendar day. A store-date "
+        "is closed when no article row at that store is active; a missing store-date "
+        "is treated as not closed."
     ),
     "closed_days_prev_2": (
-        "Number of store-closed dates from two days before the target through the day "
-        "before the target."
+        "Count of closed store-dates in the two calendar dates target - 2 through "
+        "target - 1. A date is closed when no article row at the store is active; "
+        "missing store-dates do not increase the count."
     ),
     "closed_days_prev_3": (
-        "Number of store-closed dates from three days before the target through the "
-        "day before the target."
+        "Count of closed store-dates in the three calendar dates target - 3 through "
+        "target - 1. A date is closed when no article row at the store is active; "
+        "missing store-dates do not increase the count."
     ),
     "days_to_nearest_event": (
-        "Signed calendar-day difference from the target date to the nearest known "
-        "Niedersachsen public holiday; positive values are before the holiday."
+        "Signed number of calendar days from the target date to the nearest "
+        "Niedersachsen public holiday: holiday date minus target date. Positive values "
+        "indicate dates before the holiday and negative values dates after it; ties "
+        "are resolved in favor of the earlier holiday."
     ),
     "holiday_event_window": (
-        "Categorical holiday position: holiday, one-to-three days before, one-to-three "
-        "days after, or none."
+        "Categorical position of the target date relative to its nearest Niedersachsen "
+        "public holiday: holiday, 1-3 calendar days before, 1-3 calendar days after, "
+        "or none when the absolute offset exceeds three days."
     ),
     "event_name": (
-        "Name of the nearest Niedersachsen public holiday when it is within three "
-        "calendar days of the target date; otherwise none."
+        "Name of the nearest Niedersachsen public holiday when its absolute calendar-"
+        "day offset from the target is at most three; otherwise the category none."
     ),
     "action_on_forecast_day": (
-        "Promotion flag from the known action schedule on the forecast target date."
+        "Article-store promotion indicator recorded for the forecast target date; no "
+        "filter on target-day activity is applied."
     ),
     "action_during_horizon": (
-        "Maximum promotion flag across all seven target dates for the series and origin."
+        "Maximum article-store promotion indicator across all observed target rows in "
+        "the configured forecast horizon for the origin; inactive target rows remain "
+        "in the maximum."
     ),
     "days_since_last_action": (
-        "Calendar days from the most recent promotion strictly before the origin to "
-        "the origin."
+        "Calendar-day difference between the origin and the most recent observed row "
+        "with action_flag = 1 strictly before the origin. Activity is not filtered; "
+        "the value is missing when no earlier action exists."
     ),
     "actions_last_28d": (
-        "Sum of daily promotion flags from origin minus 28 calendar days through the "
-        "day before origin."
+        "Sum of action_flag over observed article-store rows in the half-open calendar "
+        "interval [origin - 28 days, origin). Activity is not filtered, missing dates "
+        "are not synthesized, and the result is zero when no rows exist."
     ),
     "mean_action_lift_in_sourcing_group": (
-        "For the sourcing group, cumulative mean active-day demand on promotion days "
-        "divided by cumulative mean active-day demand on non-promotion days, minus one; "
-        "only dates strictly before the origin are used."
+        "Across all article-store rows in the sourcing group strictly before the "
+        "origin, the mean demand on active promotion observations divided by the mean "
+        "demand on active non-promotion observations, minus one. Inactive observations "
+        "are excluded from both denominators; active zero-demand observations are "
+        "included. The value is missing if either group is absent or the regular-day "
+        "mean is zero."
     ),
     "active_days_before_origin": (
-        "Cumulative count of active calendar days for the article-store series strictly "
-        "before the origin."
+        "Count of observed article-store rows with is_active = true strictly before "
+        "the origin. Each daily row contributes at most one; inactive and missing "
+        "calendar dates do not contribute."
     ),
     "demand_days_before_origin": (
-        "Cumulative count of active days with demand greater than zero for the series "
-        "strictly before the origin."
+        "Count of observed article-store rows that are active and have demand > 0 "
+        "strictly before the origin; inactive, active zero-demand, and missing dates "
+        "do not contribute."
     ),
     "demand_day_ratio": (
-        "demand_days_before_origin divided by active_days_before_origin."
+        "demand_days_before_origin / active_days_before_origin. The denominator contains "
+        "only active observed rows, including active zero-demand rows; the ratio is "
+        "missing when no active history exists."
     ),
     "active_zero_demand_gap": (
-        "Number of active days after the series' most recent positive-demand day and "
-        "before the origin; inactive calendar days do not increase the gap."
+        "Number of active observed rows after the most recent active positive-demand "
+        "row and strictly before the origin. Inactive and missing calendar dates do "
+        "not increase the gap; before the first positive-demand row, all active "
+        "observations are counted."
     ),
     "demand_days_last_7": (
-        "Count of active positive-demand days from origin minus seven calendar days "
-        "through the day before origin."
+        "Count of active positive-demand observations in the seven-calendar-day window "
+        "ending on the last observed row before the origin. Inactive, zero-demand, and "
+        "missing dates do not contribute."
     ),
     "demand_days_last_28": (
-        "Count of active positive-demand days from origin minus 28 calendar days "
-        "through the day before origin."
+        "Count of active positive-demand observations in the 28-calendar-day window "
+        "ending on the last observed row before the origin. Inactive, zero-demand, and "
+        "missing dates do not contribute."
     ),
     "demand_days_last_60": (
-        "Count of active positive-demand days from origin minus 60 calendar days "
-        "through the day before origin."
+        "Count of active positive-demand observations in the 60-calendar-day window "
+        "ending on the last observed row before the origin. Inactive, zero-demand, and "
+        "missing dates do not contribute."
     ),
     "historical_p90_gap": (
-        "90th percentile of the series' completed active-day zero-demand gaps ending "
-        "strictly before the origin; until ten completed gaps exist, the historical "
-        "maximum gap is used instead, or the current gap when no completed gap exists."
+        "Reference length for completed gaps between consecutive active positive-demand "
+        "observations, measured as the number of intervening active observations. With "
+        "at least ten completed gaps strictly before the origin it is their continuous "
+        "90th percentile; otherwise it is their maximum, or the current active gap when "
+        "none is completed. Inactive and missing calendar dates do not lengthen gaps."
     ),
     "current_gap_over_historical_p90_gap": (
-        "active_zero_demand_gap divided by historical_p90_gap; set to zero when the "
-        "current gap is zero and left missing when no nonzero denominator exists."
+        "active_zero_demand_gap / historical_p90_gap. Both quantities are measured in "
+        "active observations rather than calendar days. The result is zero when the "
+        "current gap is zero and missing when a positive gap has no nonzero reference."
     ),
     "same_weekday_lag_7": (
-        "Series demand on the exact calendar date seven days before the forecast target "
-        "date."
+        "Article-store demand on the exact calendar date target - 7 days. No activity "
+        "filter is applied, so an observed inactive date contributes its recorded zero; "
+        "a missing date produces a missing feature."
     ),
     "same_weekday_lag_14": (
-        "Series demand on the exact calendar date 14 days before the forecast target "
-        "date."
+        "Article-store demand on the exact calendar date target - 14 days. No activity "
+        "filter is applied, so an observed inactive date contributes its recorded zero; "
+        "a missing date produces a missing feature."
     ),
     "rolling_7_mean": (
-        "Arithmetic mean of series demand over the final seven calendar rows strictly "
-        "before the origin, including inactive days recorded with zero demand."
+        "Arithmetic mean of demand over the final seven observed article-store rows "
+        "strictly before the origin. The denominator is the number of non-null demand "
+        "values, without an activity filter: inactive rows recorded with zero are "
+        "included, while missing calendar dates are absent and can make the row window "
+        "extend more than seven calendar days."
     ),
     "rolling_28_mean": (
-        "Arithmetic mean of series demand over the final 28 calendar rows strictly "
-        "before the origin, including inactive days recorded with zero demand."
+        "Arithmetic mean of demand over the final 28 observed article-store rows "
+        "strictly before the origin. The denominator is the number of non-null demand "
+        "values, without an activity filter: inactive rows recorded with zero are "
+        "included, while missing calendar dates are absent and can make the row window "
+        "extend more than 28 calendar days."
     ),
     "rolling_28_demand_rate": (
-        "Share of active days with positive demand among the final 28 calendar rows "
-        "strictly before the origin."
+        "Share of active observations with demand > 0 within the final 28 observed "
+        "article-store rows strictly before the origin. The denominator includes only "
+        "active rows, including active zero-demand rows; inactive rows and missing "
+        "dates are excluded."
     ),
     "same_weekday_mean_4": (
-        "Mean demand over the final four active observations matching the target ISO "
-        "weekday and occurring strictly before the origin."
+        "Arithmetic mean over up to the final four active article-store observations "
+        "strictly before the origin whose ISO weekday matches the target weekday. The "
+        "denominator is the available active observations, including zero-demand rows; "
+        "inactive and missing dates are excluded."
     ),
     "same_weekday_mean_8": (
-        "Mean demand over the final eight active observations matching the target ISO "
-        "weekday and occurring strictly before the origin."
+        "Arithmetic mean over up to the final eight active article-store observations "
+        "strictly before the origin whose ISO weekday matches the target weekday. The "
+        "denominator is the available active observations, including zero-demand rows; "
+        "inactive and missing dates are excluded."
     ),
     "has_annual_history": (
-        "One when the series has an observed calendar row exactly A days before the "
-        "target date, where A aligns Easter periods across years and is 364 otherwise."
+        "Indicator that an article-store row exists on the exact calendar date target "
+        "- A. Activity is not required, so an inactive row counts as history; a missing "
+        "row does not. A is the day difference between current and previous Easter for "
+        "targets from 21 days before through 64 days after Easter, and 364 otherwise."
     ),
     "same_weekday_last_year_mean": (
-        "Mean available series demand at target minus A-14, A-7, A, A+7, and "
-        "A+14 days, where A is the Easter-aware annual offset."
+        "Arithmetic mean of article-store demand on the five exact calendar dates "
+        "target - (A - 14), target - (A - 7), target - A, target - (A + 7), and "
+        "target - (A + 14). A is the Easter-aware annual offset. The feature is only "
+        "constructed when the target - A row exists, regardless of that row's activity. "
+        "The averaging denominator contains only available active lookup rows among the "
+        "five dates, including active zero-demand rows. Inactive and missing lookup "
+        "dates are excluded; the result is missing when none of the five is active."
     ),
     "same_week_last_year_mean": (
-        "Mean series demand over the Monday-to-Sunday calendar week A days before "
-        "the target week, where A is the Easter-aware annual offset."
+        "Arithmetic mean of article-store demand over active observed rows in the "
+        "reference Monday-Sunday calendar week whose Monday is target-week Monday - A "
+        "days. A is the Easter-aware annual offset. The denominator is the number of "
+        "available active daily rows, including active zero-demand rows; inactive and "
+        "missing dates are excluded. The result is missing when the reference week has "
+        "no active row."
     ),
     "product_cross_store_same_weekday_last_year_mean": (
-        "For each target-minus offset in A-14, A-7, A, A+7, and A+14 days, mean "
-        "article demand is first calculated across active stores; the feature is the "
-        "mean of those five cross-store values."
+        "For each of the five exact dates target - (A - 14), target - (A - 7), target "
+        "- A, target - (A + 7), and target - (A + 14), article demand is first averaged "
+        "across active stores. Each daily denominator therefore contains active store "
+        "rows, including active zero-demand rows, while inactive stores are excluded. "
+        "The feature is the arithmetic mean of the available non-null daily means; "
+        "dates with no active store or no article row are excluded. The feature is "
+        "only constructed when an article row exists at some store on target - A; "
+        "that central row need not be active."
     ),
     "same_event_offset_last_year_mean": (
-        "The nearest target-date holiday and signed day offset are mapped to the same "
-        "holiday in the previous year; the feature is mean series demand from three "
-        "calendar days before through three days after that mapped date."
+        "When the target is at most ten calendar days from its nearest Niedersachsen "
+        "holiday, the signed target-to-holiday offset is mapped to the same holiday in "
+        "the preceding year. The feature is the arithmetic mean of article-store demand "
+        "over active observed rows in the seven-calendar-day interval centered on that "
+        "mapped date. The denominator contains only available active rows, including "
+        "active zero-demand rows; inactive and missing dates are excluded. The result "
+        "is missing when the target's absolute holiday offset exceeds ten days, no row "
+        "exists on the mapped center date, or the centered interval has no active row."
     ),
     "ADI": (
-        "Cumulative active days divided by cumulative positive-demand days for the "
-        "series, using all observations strictly before the origin."
+        "Count of active article-store observations divided by the count of active "
+        "positive-demand observations, using all rows strictly before the origin. "
+        "Active zero-demand rows contribute only to the numerator; inactive and missing "
+        "dates contribute to neither. The value is missing when no positive-demand "
+        "observation exists."
     ),
     "CV2": (
-        "Population variance of positive demand quantities divided by their squared "
-        "mean, using all active positive-demand observations strictly before origin."
+        "Population variance of demand divided by squared mean demand, calculated over "
+        "all active positive-demand article-store observations strictly before the "
+        "origin. Only those positive observations enter the moment denominators; "
+        "inactive, zero-demand, and missing dates are excluded."
     ),
     "product_cross_store_mean_28": (
-        "For each of the final 28 calendar dates before origin, article demand is "
-        "averaged across active stores; the feature is the mean of those daily values."
+        "For each article-date, demand is first averaged across active stores, with "
+        "active zero-demand stores included and inactive stores excluded. The feature "
+        "is the arithmetic mean of the available daily means in the final 28 observed "
+        "article-date rows strictly before the origin. Days with no active store yield "
+        "null and are excluded from the outer denominator; missing article-dates are "
+        "absent and can make the row window span more than 28 calendar days."
     ),
     "product_weekday_profile_value": (
-        "Article demand summed across stores over the final eight active occurrences of "
-        "the target weekday, divided by total article demand across the final 56 calendar "
-        "dates before origin; 1/7 is used when the denominator is zero."
+        "Total article demand across stores on up to the final eight observed dates "
+        "strictly before the origin that match the target weekday and have at least one "
+        "active store, divided by total article demand across the final 56 observed "
+        "article-date rows before the origin. The numerator's date eligibility uses "
+        "activity, but each eligible date's demand sum includes every observed store "
+        "row; inactive rows contribute their recorded zero. Missing dates are absent "
+        "from both row windows. The value defaults to 1/7 when the denominator is not "
+        "positive."
     ),
     "store_category_mean_28": (
-        "For each of the final 28 calendar dates before origin, demand is averaged across "
-        "active products in the same store and category; the feature is the mean of "
-        "those daily category values."
+        "For each store-category-date, demand is first averaged across active article "
+        "rows, including active zeros and excluding inactive articles. The feature is "
+        "the arithmetic mean of the available daily category means in the final 28 "
+        "observed store-category-date rows strictly before the origin. Dates with no "
+        "active article yield null and are excluded from the outer denominator; missing "
+        "dates are absent and can make the row window span more than 28 calendar days."
     ),
     "spoilage_qty_last_28d": (
-        "Sum of Q-type spoilage quantity for the series from origin minus 28 calendar "
-        "days through the day before origin; zero when no records exist."
+        "Sum of Q-type spoilage-record quantities for the article-store series in the "
+        "half-open calendar interval [origin - 28 days, origin). The sales-day activity "
+        "flag is not used; missing records contribute nothing and the result is zero "
+        "when no qualifying record exists."
     ),
     "spoilage_days_last_28d": (
-        "Count of distinct dates with Q-type spoilage records for the series during the "
-        "28 calendar days before origin."
+        "Count of distinct calendar dates with at least one Q-type spoilage record for "
+        "the article-store series in [origin - 28 days, origin). Sales-day activity is "
+        "not considered; dates without records are not part of a denominator."
     ),
     "days_since_last_spoilage": (
-        "Calendar days from the most recent Q-type spoilage record strictly before the "
-        "origin to the origin."
+        "Calendar-day difference between the origin and the most recent Q-type spoilage "
+        "record for the article-store series strictly before the origin. Sales-day "
+        "activity is not considered; the value is missing when no prior record exists."
     ),
     "has_any_spoilage_history": (
-        "One when at least one Q-type spoilage record exists for the series strictly "
-        "before the origin, otherwise zero."
+        "Indicator that at least one Q-type spoilage record exists for the article-store "
+        "series strictly before the origin. Sales-day activity is not considered."
     ),
     "receipt_qty_pos_last_7d": (
-        "Sum of positive goods-receipt quantities for the series during the seven "
-        "calendar days before origin."
+        "Sum of positive goods-receipt record quantities for the article-store series "
+        "in [origin - 7 days, origin). Sales-day activity is not considered; nonpositive "
+        "and missing records contribute nothing, and an empty sum is returned as zero."
     ),
     "receipt_qty_pos_last_14d": (
-        "Sum of positive goods-receipt quantities for the series during the 14 calendar "
-        "days before origin."
+        "Sum of positive goods-receipt record quantities for the article-store series "
+        "in [origin - 14 days, origin). Sales-day activity is not considered; "
+        "nonpositive and missing records contribute nothing, and an empty sum is zero."
     ),
     "receipt_qty_pos_last_28d": (
-        "Sum of positive goods-receipt quantities for the series during the 28 calendar "
-        "days before origin."
+        "Sum of positive goods-receipt record quantities for the article-store series "
+        "in [origin - 28 days, origin). Sales-day activity is not considered; "
+        "nonpositive and missing records contribute nothing, and an empty sum is zero."
     ),
     "receipt_days_last_28d": (
-        "Count of distinct dates with any goods-receipt record for the series during the "
-        "28 calendar days before origin."
+        "Count of distinct calendar dates with at least one goods-receipt record of any "
+        "sign for the article-store series in [origin - 28 days, origin). Sales-day "
+        "activity is not considered; dates without records are not in a denominator."
     ),
     "days_since_last_receipt": (
-        "Calendar days from the most recent goods-receipt record strictly before the "
-        "origin to the origin."
+        "Calendar-day difference between the origin and the most recent goods-receipt "
+        "record of any sign for the article-store series strictly before the origin. "
+        "Sales-day activity is not considered; the value is missing without history."
     ),
     "receipt_qty_net_last_28d": (
-        "Signed sum of all goods-receipt quantities for the series during the 28 "
-        "calendar days before origin."
+        "Signed sum of all goods-receipt record quantities for the article-store series "
+        "in [origin - 28 days, origin). Sales-day activity is not considered; missing "
+        "records contribute nothing and an empty sum is returned as zero."
     ),
     "receipt_negative_qty_last_28d": (
-        "Sum of the absolute quantities of negative goods-receipt records for the "
-        "series during the 28 calendar days before origin."
+        "Sum of absolute quantities over negative goods-receipt records for the "
+        "article-store series in [origin - 28 days, origin). Sales-day activity is not "
+        "considered; nonnegative and missing records contribute nothing, and an empty "
+        "sum is returned as zero."
     ),
     "has_receipt_history": (
-        "One when at least one goods-receipt record exists for the series strictly "
-        "before the origin, otherwise zero."
+        "Indicator that at least one goods-receipt record of any sign exists for the "
+        "article-store series strictly before the origin. Sales-day activity is not "
+        "considered."
     ),
 }
 
@@ -809,7 +913,8 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
             reference.ARTIKEL_ID,
             reference.MARKT_ID,
             reference.target_period,
-            AVG(history.demand) AS same_weekday_last_year_mean
+            AVG(history.demand) FILTER (WHERE history.is_active)
+                AS same_weekday_last_year_mean
         FROM annual_references AS reference
         INNER JOIN ml_annual_reference_dates AS candidate
             ON reference.target_period = candidate.target_period
@@ -830,7 +935,7 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
             ARTIKEL_ID,
             MARKT_ID,
             DATE_TRUNC('week', period)::DATE AS reference_week_start,
-            AVG(demand) AS same_week_last_year_mean
+            AVG(demand) FILTER (WHERE is_active) AS same_week_last_year_mean
         FROM benchmark_daily_rows
         GROUP BY ARTIKEL_ID, MARKT_ID, DATE_TRUNC('week', period)
         """
@@ -842,7 +947,7 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
             ARTIKEL_ID,
             MARKT_ID,
             period AS reference_period,
-            AVG(demand) OVER (
+            AVG(demand) FILTER (WHERE is_active) OVER (
                 PARTITION BY ARTIKEL_ID, MARKT_ID
                 ORDER BY period
                 RANGE BETWEEN INTERVAL 3 DAY PRECEDING
@@ -1453,6 +1558,8 @@ def make_feature_frame(
                 ON t.ARTIKEL_ID = e.ARTIKEL_ID
                 AND t.MARKT_ID = e.MARKT_ID
                 AND event_calendar.previous_event_offset_date = e.reference_period
+                AND ABS(event_calendar.days_to_nearest_event)
+                    <= {MAX_EVENT_OFFSET_DAYS}
         ),
         with_weekday AS (
             SELECT t.*, w.same_weekday_mean_4, w.same_weekday_mean_8

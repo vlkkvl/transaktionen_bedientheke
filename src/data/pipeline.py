@@ -20,6 +20,7 @@ from src.data.cleaning import (
     remove_stale_series,
 )
 from src.data.cleaning.convert import csv_gzip_to_parquet, csv_to_parquet
+from src.data.cleaning.convert.common import conversion_is_current
 from src.data.preparation import (
     discover_sparse_regions,
     distribute_sales_over_active_days,
@@ -31,10 +32,6 @@ RAW_TRANSACTIONS_DIR = ROOT / "data" / "raw" / "transactions"
 YEARLY_PARQUET_DIR = ROOT / "data" / "interim" / "transactions_per_year"
 
 
-def has_yearly_parquet() -> bool:
-    return any(YEARLY_PARQUET_DIR.glob("transactions_year_*.parquet"))
-
-
 def raw_files_by_type() -> dict[str, list[Path]]:
     return {
         "csv": sorted(RAW_TRANSACTIONS_DIR.glob("*.csv")),
@@ -43,7 +40,7 @@ def raw_files_by_type() -> dict[str, list[Path]]:
     }
 
 
-def select_raw_converter() -> tuple[str, Callable[[], None]]:
+def select_raw_converter() -> tuple[str, list[Path], Callable[[], None]]:
     available = {
         file_type: files
         for file_type, files in raw_files_by_type().items()
@@ -63,9 +60,13 @@ def select_raw_converter() -> tuple[str, Callable[[], None]]:
 
     file_type = next(iter(available))
     if file_type == "csv":
-        return "CSV to yearly parquet", csv_to_parquet.main
+        return "CSV to yearly parquet", available[file_type], csv_to_parquet.main
     if file_type == "csv.gz":
-        return "CSV gzip to yearly parquet", csv_gzip_to_parquet.main
+        return (
+            "CSV gzip to yearly parquet",
+            available[file_type],
+            csv_gzip_to_parquet.main,
+        )
 
     raise ValueError(
         "Raw parquet files are already parquet. Place yearly parquet files in "
@@ -91,16 +92,16 @@ def run_stage(index: int, total: int, title: str, fn: Callable[[], None]) -> Non
 
 def make_raw_conversion_stage(force: bool) -> Callable[[], None]:
     def stage() -> None:
-        if not force and has_yearly_parquet():
+        title, raw_files, converter = select_raw_converter()
+        if not force and conversion_is_current(raw_files, YEARLY_PARQUET_DIR):
             print(
-                "Skipping raw conversion; found yearly parquet files in "
-                f"{YEARLY_PARQUET_DIR}"
+                "Skipping raw conversion; yearly parquet files already include "
+                f"all {len(raw_files)} current raw files."
             )
-            print("Use --force-csv-conversion to rebuild them from raw files.")
             return
 
-        title, converter = select_raw_converter()
         print(f"Using converter: {title}")
+        print(f"Rebuilding from {len(raw_files)} raw files")
         converter()
 
     return stage
@@ -111,7 +112,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-csv-conversion",
         action="store_true",
-        help="Rebuild data/interim/transactions from raw transaction files.",
+        help="Rebuild yearly parquet even when the raw-source manifest is current.",
     )
     return parser.parse_args()
 
@@ -119,24 +120,24 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     stages: list[tuple[str, Callable[[], None]]] = [
-        (
-            "Raw files to yearly parquet",
-            make_raw_conversion_stage(args.force_csv_conversion),
-        ),
-        ("Apply article filter report", filtering.main),
+        # (
+        #     "Raw files to yearly parquet",
+        #     make_raw_conversion_stage(args.force_csv_conversion),
+        # ),
+        # ("Apply article filter report", filtering.main),
 
-        (# receives "data" / "interim" / "transactions_per_year", writes "data" / "interim" / "transactions_per_year_filtered"
-            "Filter pooled transactions, tag FCM/pseudo, and define ABVERKAUFTE_MENGE_KG",
-            define_goal_variable.main,
-        ),
-        # receives "data" / "interim" / "transactions_per_year_filtered", writes "data" / "interim" / "transactions_duplicates" (only duplicates)
-        ("Export duplicate diagnostics", check_duplicates.main),
+        # (# receives "data" / "interim" / "transactions_per_year", writes "data" / "interim" / "transactions_per_year_filtered"
+        #     "Filter pooled transactions, tag FCM/pseudo, and define ABVERKAUFTE_MENGE_KG",
+        #     define_goal_variable.main,
+        # ),
+        # # receives "data" / "interim" / "transactions_per_year_filtered", writes "data" / "interim" / "transactions_no_dups"
+        # ("Remove duplicate transactions", check_duplicates.main),
 
-        # receives "data" / "interim" / "transactions_per_year_filtered", writes "data" / "interim" / "transactions_daily_agg"
-        ("Aggregate daily transactions with product-type indicators", aggregate_daily.main),
+        # # receives "data" / "interim" / "transactions_no_dups", writes "data" / "interim" / "transactions_daily_agg"
+        # ("Aggregate daily transactions with product-type indicators", aggregate_daily.main),
 
-        # receives "data" / "interim" / "transactions_daily_agg",  writes "data" / "interim" / "transactions_dst_over_days"
-        ("Expand sales over the complete calendar", distribute_sales_over_active_days.main),
+        # # receives "data" / "interim" / "transactions_daily_agg",  writes "data" / "interim" / "transactions_dst_over_days"
+        # ("Expand sales over the complete calendar", distribute_sales_over_active_days.main),
 
         # receives "data" / "interim" / "transactions_dst_over_days", writes "data" / "interim" / "transactions_dst_daily_no_outliers"
         (

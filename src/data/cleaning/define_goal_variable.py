@@ -85,19 +85,25 @@ def output_select_sql(columns: list[str]) -> str:
     )
     expressions = []
     for col in columns:
-        if col == TARGET_COL:
+        normalized_col = col.casefold()
+        if normalized_col == TARGET_COL.casefold():
             expressions.append(target_expr)
-        elif col == GEWICHT_FLAG:
+        elif normalized_col == GEWICHT_FLAG.casefold():
             expressions.append(weight_flag_expr)
+        elif normalized_col == FCM_COL.casefold():
+            expressions.append(f"{ident(col)} AS {ident(FCM_COL)}")
+        elif normalized_col == PSEUDO_COL.casefold():
+            expressions.append(f"{ident(col)} AS {ident(PSEUDO_COL)}")
         else:
             expressions.append(ident(col))
-    if TARGET_COL not in columns:
+    normalized_columns = {col.casefold() for col in columns}
+    if TARGET_COL.casefold() not in normalized_columns:
         expressions.append(target_expr)
-    if FCM_COL not in columns:
+    if FCM_COL.casefold() not in normalized_columns:
         expressions.append(fcm_expr)
-    if PSEUDO_COL not in columns:
+    if PSEUDO_COL.casefold() not in normalized_columns:
         expressions.append(pseudo_expr)
-    if GEWICHT_FLAG not in columns:
+    if GEWICHT_FLAG.casefold() not in normalized_columns:
         expressions.append(weight_flag_expr)
     return ",\n            ".join(expressions)
 

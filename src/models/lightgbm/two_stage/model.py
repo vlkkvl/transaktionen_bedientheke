@@ -97,6 +97,7 @@ def _train_stage(
     objective: str,
     metric: str,
     labels: tuple[pd.Series, pd.Series],
+    feature_columns: tuple[str, ...] = FEATURE_COLUMNS,
     restore_target_scale: bool = False,
     params: dict[str, Any] | None = None,
 ) -> tuple[
@@ -119,8 +120,12 @@ def _train_stage(
             if params is None
             else params
         ),
-        feature_columns=FEATURE_COLUMNS,
-        categorical_features=CATEGORICAL_FEATURES,
+        feature_columns=feature_columns,
+        categorical_features=tuple(
+            feature
+            for feature in CATEGORICAL_FEATURES
+            if feature in feature_columns
+        ),
         config=config,
         prediction_scale_column=(
             TARGET_SCALE_COLUMN if restore_target_scale else None
@@ -133,6 +138,7 @@ def _fit_origin(
     config: GlobalLightGBMConfig,
     occurrence_params: dict[str, Any] | None = None,
     quantity_params: dict[str, Any] | None = None,
+    feature_columns: tuple[str, ...] = FEATURE_COLUMNS,
 ) -> LightGBMVariantResult:
     (
         occurrence,
@@ -150,6 +156,7 @@ def _fit_origin(
             frames.training["actual"].gt(0).astype(np.int8),
             frames.validation["actual"].gt(0).astype(np.int8),
         ),
+        feature_columns=feature_columns,
         params=occurrence_params,
     )
     positive_training = frames.training.loc[frames.training["actual"].gt(0)].copy()
@@ -173,6 +180,7 @@ def _fit_origin(
             positive_training[NORMALIZED_TARGET_COLUMN],
             positive_validation[NORMALIZED_TARGET_COLUMN],
         ),
+        feature_columns=feature_columns,
         restore_target_scale=True,
         params=quantity_params,
     )
@@ -214,7 +222,7 @@ def _fit_origin(
                 "best_iteration": occurrence_iteration,
                 "objective": "binary",
                 "early_stopping_metric": "binary_logloss",
-                "features": len(FEATURE_COLUMNS),
+                "features": len(feature_columns),
             },
             {
                 "model": TWO_STAGE_MODEL_NAME,
@@ -225,7 +233,7 @@ def _fit_origin(
                 "best_iteration": quantity_iteration,
                 "objective": "gamma",
                 "early_stopping_metric": "gamma_deviance",
-                "features": len(FEATURE_COLUMNS),
+                "features": len(feature_columns),
             },
         ]
     )
@@ -248,11 +256,28 @@ def fit_two_stage(
     *,
     occurrence_params: dict[str, Any] | None = None,
     quantity_params: dict[str, Any] | None = None,
+    feature_columns: tuple[str, ...] = FEATURE_COLUMNS,
 ) -> LightGBMVariantResult:
-    """Refit both two-stage boosters for each four-week test block."""
+    """Refit both two-stage boosters using the requested feature subset."""
     config = GlobalLightGBMConfig() if config is None else config
+    feature_columns = tuple(feature_columns)
+    if not feature_columns:
+        raise ValueError("At least one feature is required")
+    if len(set(feature_columns)) != len(feature_columns):
+        raise ValueError("Feature columns must be unique")
+    unknown_features = sorted(set(feature_columns) - set(FEATURE_COLUMNS))
+    if unknown_features:
+        raise KeyError(
+            "Unknown two-stage features: " + ", ".join(unknown_features)
+        )
     results = [
-        _fit_origin(item, config, occurrence_params, quantity_params)
+        _fit_origin(
+            item,
+            config,
+            occurrence_params,
+            quantity_params,
+            feature_columns,
+        )
         for item in origin_frame_sequence(frames)
     ]
     combined = combine_origin_results(results, LightGBMVariantResult)

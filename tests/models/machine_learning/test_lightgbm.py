@@ -25,6 +25,7 @@ from src.models.lightgbm import (
     GlobalLightGBMConfig,
     create_feature_tables,
     fit_all_lightgbm_models,
+    fit_two_stage,
     make_feature_frame,
     make_weekly_frame,
     prepare_global_lightgbm_frames,
@@ -333,24 +334,159 @@ class GlobalLightGBMTest(unittest.TestCase):
             cross_store,
         )
 
-        event_reference = self.con.execute(
+        self.assertGreater(
+            abs(
+                self.con.execute(
+                    """
+                    SELECT days_to_nearest_event
+                    FROM ml_calendar
+                    WHERE period = ?
+                    """,
+                    [origin.date()],
+                ).fetchone()[0]
+            ),
+            10,
+        )
+        self.assertTrue(pd.isna(first.same_event_offset_last_year_mean))
+
+        near_event_target = origin + pd.Timedelta(days=1)
+        near_event_row = frame.loc[
+            frame.ARTIKEL_ID.eq(1)
+            & frame.MARKT_ID.eq(10)
+            & frame.period.eq(near_event_target)
+        ].iloc[0]
+        event_offset, event_reference = self.con.execute(
             """
-            SELECT previous_event_offset_date
+            SELECT days_to_nearest_event, previous_event_offset_date
             FROM ml_calendar
             WHERE period = ?
             """,
-            [origin.date()],
-        ).fetchone()[0]
+            [near_event_target.date()],
+        ).fetchone()
         event_mean = self.con.execute(
             """
             SELECT AVG(demand)
             FROM benchmark_daily_rows
             WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10
                 AND period BETWEEN ? - INTERVAL 3 DAY AND ? + INTERVAL 3 DAY
+                AND is_active
             """,
             [event_reference, event_reference],
         ).fetchone()[0]
-        self.assertAlmostEqual(first.same_event_offset_last_year_mean, event_mean)
+        self.assertEqual(abs(event_offset), 10)
+        self.assertAlmostEqual(
+            near_event_row.same_event_offset_last_year_mean,
+            event_mean,
+        )
+
+    def test_annual_means_exclude_inactive_lookup_dates(self) -> None:
+        origin = pd.Timestamp("2025-04-07")
+        annual_offset = get_last_year_offset(origin)
+        annual_reference = origin - pd.Timedelta(days=annual_offset)
+        corresponding_weekdays = [
+            origin - pd.Timedelta(days=offset)
+            for offset in (
+                annual_offset - 14,
+                annual_offset - 7,
+                annual_offset,
+                annual_offset + 7,
+                annual_offset + 14,
+            )
+        ]
+        reference_week = pd.date_range(annual_reference, periods=7, freq="D")
+        near_event_target = origin + pd.Timedelta(days=1)
+
+        create_feature_tables(self.con)
+        event_reference = self.con.execute(
+            """
+            SELECT previous_event_offset_date
+            FROM ml_calendar
+            WHERE period = ?
+            """,
+            [near_event_target.date()],
+        ).fetchone()[0]
+
+        self.con.execute(
+            """
+            UPDATE benchmark_daily_rows
+            SET demand = 10.0, is_active = TRUE, reason_closed = NULL
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10
+                AND (
+                    period BETWEEN ? - INTERVAL 14 DAY AND ? + INTERVAL 14 DAY
+                    OR period BETWEEN ? - INTERVAL 3 DAY AND ? + INTERVAL 3 DAY
+                )
+            """,
+            [
+                annual_reference.date(),
+                annual_reference.date(),
+                event_reference,
+                event_reference,
+            ],
+        )
+        inactive_dates = {
+            annual_reference,
+            annual_reference + pd.Timedelta(days=2),
+            annual_reference + pd.Timedelta(days=7),
+            pd.Timestamp(event_reference),
+            pd.Timestamp(event_reference) + pd.Timedelta(days=1),
+        }
+        self.con.execute(
+            f"""
+            UPDATE benchmark_daily_rows
+            SET demand = 0.0, is_active = FALSE, reason_closed = 'test closure'
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10
+                AND period IN ({", ".join("?" for _ in inactive_dates)})
+            """,
+            [date.date() for date in sorted(inactive_dates)],
+        )
+
+        create_feature_tables(self.con)
+        frame = make_feature_frame(self.con, [origin], self.design)
+        annual_row = frame.loc[
+            frame.ARTIKEL_ID.eq(1)
+            & frame.MARKT_ID.eq(10)
+            & frame.period.eq(origin)
+        ].iloc[0]
+        event_row = frame.loc[
+            frame.ARTIKEL_ID.eq(1)
+            & frame.MARKT_ID.eq(10)
+            & frame.period.eq(near_event_target)
+        ].iloc[0]
+
+        weekday_mean, active_weekdays = self.con.execute(
+            f"""
+            SELECT AVG(demand) FILTER (WHERE is_active), COUNT_IF(is_active)
+            FROM benchmark_daily_rows
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10
+                AND period IN ({", ".join("?" for _ in corresponding_weekdays)})
+            """,
+            [date.date() for date in corresponding_weekdays],
+        ).fetchone()
+        week_mean, active_week_dates = self.con.execute(
+            """
+            SELECT AVG(demand) FILTER (WHERE is_active), COUNT_IF(is_active)
+            FROM benchmark_daily_rows
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10
+                AND period BETWEEN ? AND ?
+            """,
+            [reference_week.min().date(), reference_week.max().date()],
+        ).fetchone()
+        event_mean, active_event_dates = self.con.execute(
+            """
+            SELECT AVG(demand) FILTER (WHERE is_active), COUNT_IF(is_active)
+            FROM benchmark_daily_rows
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10
+                AND period BETWEEN ? - INTERVAL 3 DAY AND ? + INTERVAL 3 DAY
+            """,
+            [event_reference, event_reference],
+        ).fetchone()
+
+        self.assertEqual(active_weekdays, 3)
+        self.assertLess(active_week_dates, 7)
+        self.assertLess(active_event_dates, 7)
+        self.assertAlmostEqual(annual_row.same_weekday_last_year_mean, weekday_mean)
+        self.assertAlmostEqual(annual_row.same_week_last_year_mean, week_mean)
+        self.assertAlmostEqual(event_row.same_event_offset_last_year_mean, event_mean)
 
     def test_last_year_offset_uses_inclusive_easter_window(self) -> None:
         self.assertEqual(get_last_year_offset("2025-03-29"), 364)
@@ -599,6 +735,24 @@ class GlobalLightGBMTest(unittest.TestCase):
         self.assertEqual(
             pd.DatetimeIndex(validation_predictions.origin.unique()).tolist(),
             pd.DatetimeIndex(frames.validation.origin.unique()).tolist(),
+        )
+
+        feature_subset = tuple(FEATURE_COLUMNS[:-4])
+        subset_result = fit_two_stage(
+            frames,
+            config,
+            feature_columns=feature_subset,
+        )
+        self.assertEqual(
+            subset_result.model.occurrence.feature_columns,
+            feature_subset,
+        )
+        self.assertEqual(
+            subset_result.model.quantity.feature_columns,
+            feature_subset,
+        )
+        self.assertTrue(
+            subset_result.training_summary.features.eq(len(feature_subset)).all()
         )
 
 

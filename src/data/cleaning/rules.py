@@ -1,21 +1,28 @@
 """Shared transaction cleaning rules."""
 from __future__ import annotations
 
+import csv
 from collections.abc import Collection
+from functools import lru_cache
 from pathlib import Path
 
-from src.data.common import ident, read_parquet_expr, sql_literal
+from src.data.common import ROOT, ident, read_parquet_expr, sql_literal
 
 ARTICLE_ID_COL = "ARTIKEL_ID"
 ARTIKEL_BEZ_COL = "ARTIKEL_BEZ"
 DATE_COL = "DATE"
 MANDANT_ID_COL = "MANDANT_ID"
+MARKET_ID_COL = "MARKT_ID"
 UMS_MENGE_COL = "UMS_MENGE"
 ARTIKEL_INHALT_COL = "ARTIKEL_INHALT"
 GEWICHT_FLAG_COL = "GEWICHT_FLAG"
 WGR_ID_COL = "WGR_ID"
 FCM_COL = "is_fcm"
 PSEUDO_COL = "is_pseudo"
+
+MARKETS_FILE = ROOT / "data" / "raw" / "maerkte" / "maerkte.csv"
+MARKET_OPENING_HOURS_COL = "OEFFNUNGSZEIT_MARKT"
+CLOSED_MARKET_LABEL = "geschlossen"
 
 FCM_RULE = False
 EXTERNAL_PRODUCT_RULE = True
@@ -3729,12 +3736,22 @@ ALLOWED_FCM_ARTICLE_IDS = {
 }
 
 DUPLICATE_KEY_COLS = ["ARTIKEL_ID", "MARKT_ID", "BON_ID", "DATE", "TIME", "UMS_MENGE"]
-DROP_COLUMNS = {"EAN_ID"}
+ACTION_COLUMNS_TO_DROP = {
+    "AKTIONSNUMMER",
+    "AKTIONSJAHR",
+    "AKTIONSWOCHE",
+    "AKTIONSZUSATZ",
+    "GUELTIG_VON",
+    "GUELTIG_BIS",
+}
+DROP_COLUMNS = {"EAN_ID", *ACTION_COLUMNS_TO_DROP}
 BINARY_FLAG_COLUMNS = {
     "GEWICHT_FLAG",
     "GEWICHTSARTIKEL",
     "WAAGENARTIKEL",
     "AKTION_KENNZEICHEN",
+    "RABATT",
+    "ARTIKELRABATT",
     "PREISUEBERSCHREIBUNG",
     "BONABBRUCH",
     "STORNOART",
@@ -3743,6 +3760,28 @@ BINARY_FLAG_COLUMNS = {
     FCM_COL,
     PSEUDO_COL,
 }
+
+
+@lru_cache(maxsize=None)
+def closed_market_ids(path: Path = MARKETS_FILE) -> tuple[int, ...]:
+    """Load IDs of markets marked as closed in the market master data."""
+    if not path.exists():
+        raise FileNotFoundError(f"Market master data not found: {path}")
+
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        required_columns = {MARKET_ID_COL, MARKET_OPENING_HOURS_COL}
+        missing = sorted(required_columns - set(reader.fieldnames or ()))
+        if missing:
+            raise ValueError(f"Market master data is missing columns: {missing}")
+
+        ids = {
+            int(row[MARKET_ID_COL])
+            for row in reader
+            if CLOSED_MARKET_LABEL
+            in (row[MARKET_OPENING_HOURS_COL] or "").strip().casefold()
+        }
+    return tuple(sorted(ids))
 
 
 def allowed_fcm_article_ids_sql() -> str:
@@ -3773,7 +3812,9 @@ def fcm_filter_condition(
     columns: Collection[str] | None = None,
 ) -> str:
     """Use an existing FCM marker, otherwise identify FCM products by ID."""
-    if columns is not None and FCM_COL in columns:
+    if columns is not None and FCM_COL.casefold() in {
+        col.casefold() for col in columns
+    }:
         return existing_flag_condition(FCM_COL, alias)
     col = ident(ARTICLE_ID_COL)
     if alias:
@@ -3787,7 +3828,9 @@ def pseudo_filter_condition(
     columns: Collection[str] | None = None,
 ) -> str:
     """Use an existing pseudo marker, otherwise identify products by ID."""
-    if columns is not None and PSEUDO_COL in columns:
+    if columns is not None and PSEUDO_COL.casefold() in {
+        col.casefold() for col in columns
+    }:
         return existing_flag_condition(PSEUDO_COL, alias)
     col = ident(ARTICLE_ID_COL)
     if alias:
@@ -3813,6 +3856,18 @@ def gramm_bon_filter_condition(alias: str | None = None) -> str:
     if alias:
         col = f"{alias}.{col}"
     return f"{col} NOT IN ({excluded_gramm_bon_article_ids_sql()})"
+
+
+def closed_market_filter_condition(alias: str | None = None) -> str:
+    """Remove transactions belonging to markets marked as closed."""
+    col = ident(MARKET_ID_COL)
+    if alias:
+        col = f"{alias}.{col}"
+    ids = closed_market_ids()
+    if not ids:
+        return "TRUE"
+    ids_sql = ", ".join(str(market_id) for market_id in ids)
+    return f"COALESCE(TRY_CAST({col} AS BIGINT) NOT IN ({ids_sql}), TRUE)"
 
 
 def wgr_filter_condition(alias: str | None = None) -> str:
@@ -3897,6 +3952,7 @@ def transaction_filter_condition(
     conditions = [f"({transaction_date_filter_condition(alias)})"]
     conditions.append(f"({ums_menge_filter_condition(alias)})")
     conditions.append(f"({artikel_bez_filter_condition(alias)})")
+    conditions.append(f"({closed_market_filter_condition(alias)})")
     if fcm_rule:
         conditions.append(f"({fcm_filter_condition(alias, columns=columns)})")
     if external_product_rule:

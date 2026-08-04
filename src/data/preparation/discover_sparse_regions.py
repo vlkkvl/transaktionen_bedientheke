@@ -12,9 +12,9 @@ Outputs:
 * ``data/interim/transactions_dst_daily_filtered/transactions_year_*.parquet``
 
 The filtered transaction output removes all product-store series belonging to
-FCM 900 low intensity or Pseudo 900 high intensity, plus two explicitly
-identified Pseudo 890 sparse high-scale products. The product flags remain the
-source of truth for those exclusions.
+FCM 900 low intensity or Pseudo 900 high intensity, plus configured Pseudo 890
+sparse high-scale products that occur in the current data. The product flags
+remain the source of truth for those exclusions.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
+import warnings
 
 if not os.environ.get("LOKY_MAX_CPU_COUNT"):
     os.environ["LOKY_MAX_CPU_COUNT"] = "8"
@@ -247,6 +248,23 @@ def apply_exclusion_flags(assignments: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def warn_for_missing_sparse_scale_outliers(
+    assignments: pd.DataFrame,
+) -> set[int]:
+    """Warn when configured outliers are absent without blocking discovery."""
+    missing = PSEUDO_890_SPARSE_SCALE_OUTLIER_IDS.difference(
+        assignments["ARTIKEL_ID"]
+    )
+    if missing:
+        warnings.warn(
+            "Configured Pseudo 890 sparse-scale product IDs are absent from "
+            f"the current profiles and cannot be flagged: {sorted(missing)}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return missing
+
+
 def assign_regions(profiles: pd.DataFrame) -> pd.DataFrame:
     """Assign every product to exactly one of the seven requested regions."""
     assignments = pd.concat(
@@ -343,14 +361,7 @@ def discover_product_regions(
         "SELECT * FROM raw_product_profiles ORDER BY segment, ARTIKEL_ID"
     ).fetchdf()
     assignments = assign_regions(profiles)
-    missing_explicit_outliers = PSEUDO_890_SPARSE_SCALE_OUTLIER_IDS.difference(
-        assignments["ARTIKEL_ID"]
-    )
-    if missing_explicit_outliers:
-        raise RuntimeError(
-            "Configured Pseudo 890 sparse-scale product IDs are missing from the "
-            f"profiles: {sorted(missing_explicit_outliers)}"
-        )
+    warn_for_missing_sparse_scale_outliers(assignments)
     diagnostics = pd.concat(
         [
             k_diagnostics(profiles, "All products", max_k=8),

@@ -10,6 +10,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from src.data.common import ROOT, clear_parquet_outputs
+from src.data.cleaning.convert.common import write_source_manifest
 
 RAW_DIR = ROOT / "data" / "raw" / "transactions"
 OUT_DIR = ROOT / "data" / "interim" / "transactions_per_year"
@@ -48,6 +49,7 @@ def main() -> None:
     finally:
         for w in writers.values():
             w.close()
+    write_source_manifest(files, OUT_DIR)
 
 
 if __name__ == "__main__":

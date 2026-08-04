@@ -5,7 +5,6 @@ import unittest
 import duckdb
 
 from src.data.cleaning.aggregate_daily import (
-    DUPLICATE_KEY_COLS,
     FIRST_COLS,
     FLAG_COLS,
     REQUIRED_COLS,
@@ -103,11 +102,44 @@ class ProductTypeFlagTest(unittest.TestCase):
         self.assertIs(row["is_fcm"], True)
         self.assertIs(row["is_pseudo"], True)
 
+    def test_goal_variable_stage_canonicalizes_uppercase_product_flags(self) -> None:
+        columns = [
+            "ARTIKEL_ID",
+            "GEWICHTSARTIKEL",
+            "ARTIKEL_INHALT",
+            "GRAMM_BON",
+            "UMS_MENGE",
+            "IS_FCM",
+            "IS_PSEUDO",
+        ]
+        cursor = duckdb.connect().execute(
+            f"""
+            SELECT {output_select_sql(columns)}
+            FROM (
+                SELECT
+                    1::BIGINT AS ARTIKEL_ID,
+                    0::TINYINT AS GEWICHTSARTIKEL,
+                    '100 gramm'::VARCHAR AS ARTIKEL_INHALT,
+                    0.1::DOUBLE AS GRAMM_BON,
+                    1.0::DOUBLE AS UMS_MENGE,
+                    TRUE::BOOLEAN AS IS_FCM,
+                    FALSE::BOOLEAN AS IS_PSEUDO
+            )
+            """
+        )
+        names = [item[0] for item in cursor.description]
+        row = dict(zip(names, cursor.fetchone()))
+
+        self.assertIn("is_fcm", names)
+        self.assertIn("is_pseudo", names)
+        self.assertNotIn("IS_FCM", names)
+        self.assertNotIn("IS_PSEUDO", names)
+        self.assertIs(row["is_fcm"], True)
+        self.assertIs(row["is_pseudo"], False)
+
     def test_daily_aggregation_uses_preserved_product_flags(self) -> None:
         article_id = self.pseudo_only_article_id()
-        columns = sorted(
-            set(REQUIRED_COLS + ["is_fcm", "is_pseudo", "filename"])
-        )
+        columns = sorted(set(REQUIRED_COLS + ["is_fcm", "is_pseudo"]))
         select_parts = []
         for col in columns:
             if col == "ARTIKEL_ID":
@@ -122,7 +154,9 @@ class ProductTypeFlagTest(unittest.TestCase):
                 expression = "CAST(i AS VARCHAR)"
             elif col in SUM_COLS:
                 expression = "1.0::DOUBLE"
-            elif col in FLAG_COLS or col in {"GEWICHT_FLAG", "GEWICHTSARTIKEL"}:
+            elif col in FLAG_COLS:
+                expression = "i::TINYINT"
+            elif col in {"GEWICHT_FLAG", "GEWICHTSARTIKEL"}:
                 expression = "0::TINYINT"
             elif col in {"MARKT_NR", "MANDANT_ID", "WGR_ID"}:
                 expression = "1::BIGINT"
@@ -130,8 +164,6 @@ class ProductTypeFlagTest(unittest.TestCase):
                 expression = "TRUE::BOOLEAN"
             elif col == "is_pseudo":
                 expression = "FALSE::BOOLEAN"
-            elif col == "filename":
-                expression = "'input.parquet'::VARCHAR"
             elif col in FIRST_COLS:
                 expression = "'value'::VARCHAR"
             else:
@@ -146,22 +178,14 @@ class ProductTypeFlagTest(unittest.TestCase):
             FROM range(2) AS rows(i)
             """
         )
-        keys_sql = ", ".join(f'"{col}"' for col in DUPLICATE_KEY_COLS)
-        con.execute(
-            f"""
-            CREATE TEMP TABLE dup_keys AS
-            SELECT {keys_sql}
-            FROM input_rows
-            WHERE FALSE
-            """
-        )
+        cursor = con.execute(aggregate_select_sql(columns, "input_rows"))
+        output = dict(zip((item[0] for item in cursor.description), cursor.fetchone()))
 
-        output = con.execute(
-            aggregate_select_sql(columns, "input_rows")
-        ).fetchone()
-
-        self.assertIs(output[7], True)
-        self.assertIs(output[8], False)
+        self.assertIs(output["is_fcm"], True)
+        self.assertIs(output["is_pseudo"], False)
+        self.assertEqual(output["AKTION_KENNZEICHEN"], 1)
+        self.assertEqual(output["RABATT"], 1)
+        self.assertEqual(output["ARTIKELRABATT"], 1)
 
 
 if __name__ == "__main__":
