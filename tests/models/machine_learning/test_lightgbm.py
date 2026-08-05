@@ -33,7 +33,6 @@ from src.models.lightgbm import (
 )
 from src.models.lightgbm.base import BaseLightGBMModel
 from src.models.lightgbm.features.builder import (
-    DISABLED_OPERATIONAL_FEATURE_COLUMNS,
     get_last_year_offset,
     iter_lightgbm_origin_windows,
     materialize_features_for_origins,
@@ -148,7 +147,7 @@ class GlobalLightGBMTest(unittest.TestCase):
                 )
             """
         )
-        create_feature_tables(self.con)
+        create_feature_tables(self.con, origins=[origin], design=self.design)
         frame = make_feature_frame(self.con, [origin], self.design)
         first = frame.loc[
             frame.ARTIKEL_ID.eq(1) & frame.MARKT_ID.eq(10)
@@ -171,12 +170,6 @@ class GlobalLightGBMTest(unittest.TestCase):
         self.assertEqual(set(FEATURE_DESCRIPTIONS), set(FEATURE_COLUMNS))
         self.assertNotIn("days_since_last_positive_sale", frame.columns)
         self.assertNotIn("maturity_segment", frame.columns)
-        self.assertTrue(
-            DISABLED_OPERATIONAL_FEATURE_COLUMNS.isdisjoint(FEATURE_COLUMNS)
-        )
-        self.assertTrue(
-            DISABLED_OPERATIONAL_FEATURE_COLUMNS.isdisjoint(frame.columns)
-        )
         removed_features = {
             "recent_mean_28_forecast",
             "same_weekday_ma_4_forecast",
@@ -282,7 +275,7 @@ class GlobalLightGBMTest(unittest.TestCase):
             """,
             [annual_reference.date(), annual_reference.date()],
         )
-        create_feature_tables(self.con)
+        create_feature_tables(self.con, origins=[origin], design=self.design)
         frame = make_feature_frame(self.con, [origin], self.design)
         first = frame.loc[
             frame.ARTIKEL_ID.eq(1)
@@ -403,7 +396,7 @@ class GlobalLightGBMTest(unittest.TestCase):
         reference_week = pd.date_range(annual_reference, periods=7, freq="D")
         near_event_target = origin + pd.Timedelta(days=1)
 
-        create_feature_tables(self.con)
+        create_feature_tables(self.con, origins=[origin], design=self.design)
         event_reference = self.con.execute(
             """
             SELECT previous_event_offset_date
@@ -447,7 +440,7 @@ class GlobalLightGBMTest(unittest.TestCase):
             [date.date() for date in sorted(inactive_dates)],
         )
 
-        create_feature_tables(self.con)
+        create_feature_tables(self.con, origins=[origin], design=self.design)
         frame = make_feature_frame(self.con, [origin], self.design)
         annual_row = frame.loc[
             frame.ARTIKEL_ID.eq(1)
@@ -514,7 +507,7 @@ class GlobalLightGBMTest(unittest.TestCase):
             """,
             [annual_reference.date()],
         )
-        create_feature_tables(self.con)
+        create_feature_tables(self.con, origins=[origin], design=self.design)
 
         fixed_reference_exists = self.con.execute(
             """
@@ -536,7 +529,7 @@ class GlobalLightGBMTest(unittest.TestCase):
 
     def test_feature_materialization_writes_origin_batches(self) -> None:
         origins = pd.DatetimeIndex(["2025-01-06", "2025-01-13"])
-        create_feature_tables(self.con)
+        create_feature_tables(self.con, origins=origins, design=self.design)
 
         result = materialize_features_for_origins(
             self.con,

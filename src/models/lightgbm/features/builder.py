@@ -27,37 +27,10 @@ NORMALIZED_TARGET_COLUMN = "normalized_actual"
 TARGET_SCALE_COLUMN = "target_mean"
 DEFAULT_FEATURES_DIR = ROOT / "data" / "processed"
 DEFAULT_FEATURES_PATH = DEFAULT_FEATURES_DIR / "lightgbm_features.parquet"
-ABSCHRIFTEN_FEATURES_PATH = (
-    ROOT / "data" / "interim" / "abschriften" / "abschriften_year_*.parquet"
-)
-WARENEINGAENGE_FEATURES_PATH = (
-    ROOT / "data" / "interim" / "wareneingaenge" / "wareneingaenge_year_*.parquet"
-)
 MIN_COMPLETED_GAPS_FOR_P90 = 10
 MAX_EVENT_OFFSET_DAYS = 10
 FEATURE_ORIGIN_BATCH_SIZE = 4
-SPOILAGE_FEATURE_COLUMNS = (
-    "spoilage_qty_last_28d",
-    "spoilage_days_last_28d",
-    "days_since_last_spoilage",
-    "has_any_spoilage_history",
-)
-GOODS_RECEIPT_FEATURE_COLUMNS = (
-    "receipt_qty_pos_last_7d",
-    "receipt_qty_pos_last_14d",
-    "receipt_qty_pos_last_28d",
-    "receipt_days_last_28d",
-    "days_since_last_receipt",
-    "receipt_qty_net_last_28d",
-    "receipt_negative_qty_last_28d",
-    "has_receipt_history",
-)
-DISABLED_OPERATIONAL_FEATURE_COLUMNS = frozenset(
-    (*SPOILAGE_FEATURE_COLUMNS, *GOODS_RECEIPT_FEATURE_COLUMNS)
-)
-REMOVED_FEATURE_COLUMNS = frozenset(
-    {"lag_364", "lag_371", *DISABLED_OPERATIONAL_FEATURE_COLUMNS}
-)
+REMOVED_FEATURE_COLUMNS = frozenset({"lag_364", "lag_371"})
 
 
 def get_last_year_offset(current_date: object) -> int:
@@ -76,13 +49,6 @@ def _normalize_feature_path(path: Path | str) -> Path:
     resolved = Path(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     return resolved
-
-
-def _parquet_expr_if_available(path: Path) -> str:
-    files = sorted(Path(path).parent.glob(Path(path).name))
-    if not files:
-        return "''"
-    return str(path)
 
 
 def load_materialized_features(feature_path: Path | str = DEFAULT_FEATURES_PATH) -> pd.DataFrame:
@@ -205,20 +171,6 @@ FEATURE_COLUMNS = (
     "product_cross_store_mean_28",
     "product_weekday_profile_value",
     "store_category_mean_28",
-    # Spoilage (disabled after feature-group ablation)
-    # "spoilage_qty_last_28d",
-    # "spoilage_days_last_28d",
-    # "days_since_last_spoilage",
-    # "has_any_spoilage_history",
-    # Goods receipts (disabled after feature-group ablation)
-    # "receipt_qty_pos_last_7d",
-    # "receipt_qty_pos_last_14d",
-    # "receipt_qty_pos_last_28d",
-    # "receipt_days_last_28d",
-    # "days_since_last_receipt",
-    # "receipt_qty_net_last_28d",
-    # "receipt_negative_qty_last_28d",
-    # "has_receipt_history",
 )
 
 FEATURE_DESCRIPTIONS = {
@@ -491,75 +443,6 @@ FEATURE_DESCRIPTIONS = {
         "active article yield null and are excluded from the outer denominator; missing "
         "dates are absent and can make the row window span more than 28 calendar days."
     ),
-    "spoilage_qty_last_28d": (
-        "Sum of Q-type spoilage-record quantities for the article-store series in the "
-        "half-open calendar interval [origin - 28 days, origin). The sales-day activity "
-        "flag is not used; missing records contribute nothing and the result is zero "
-        "when no qualifying record exists."
-    ),
-    "spoilage_days_last_28d": (
-        "Count of distinct calendar dates with at least one Q-type spoilage record for "
-        "the article-store series in [origin - 28 days, origin). Sales-day activity is "
-        "not considered; dates without records are not part of a denominator."
-    ),
-    "days_since_last_spoilage": (
-        "Calendar-day difference between the origin and the most recent Q-type spoilage "
-        "record for the article-store series strictly before the origin. Sales-day "
-        "activity is not considered; the value is missing when no prior record exists."
-    ),
-    "has_any_spoilage_history": (
-        "Indicator that at least one Q-type spoilage record exists for the article-store "
-        "series strictly before the origin. Sales-day activity is not considered."
-    ),
-    "receipt_qty_pos_last_7d": (
-        "Sum of positive goods-receipt record quantities for the article-store series "
-        "in [origin - 7 days, origin). Sales-day activity is not considered; nonpositive "
-        "and missing records contribute nothing, and an empty sum is returned as zero."
-    ),
-    "receipt_qty_pos_last_14d": (
-        "Sum of positive goods-receipt record quantities for the article-store series "
-        "in [origin - 14 days, origin). Sales-day activity is not considered; "
-        "nonpositive and missing records contribute nothing, and an empty sum is zero."
-    ),
-    "receipt_qty_pos_last_28d": (
-        "Sum of positive goods-receipt record quantities for the article-store series "
-        "in [origin - 28 days, origin). Sales-day activity is not considered; "
-        "nonpositive and missing records contribute nothing, and an empty sum is zero."
-    ),
-    "receipt_days_last_28d": (
-        "Count of distinct calendar dates with at least one goods-receipt record of any "
-        "sign for the article-store series in [origin - 28 days, origin). Sales-day "
-        "activity is not considered; dates without records are not in a denominator."
-    ),
-    "days_since_last_receipt": (
-        "Calendar-day difference between the origin and the most recent goods-receipt "
-        "record of any sign for the article-store series strictly before the origin. "
-        "Sales-day activity is not considered; the value is missing without history."
-    ),
-    "receipt_qty_net_last_28d": (
-        "Signed sum of all goods-receipt record quantities for the article-store series "
-        "in [origin - 28 days, origin). Sales-day activity is not considered; missing "
-        "records contribute nothing and an empty sum is returned as zero."
-    ),
-    "receipt_negative_qty_last_28d": (
-        "Sum of absolute quantities over negative goods-receipt records for the "
-        "article-store series in [origin - 28 days, origin). Sales-day activity is not "
-        "considered; nonnegative and missing records contribute nothing, and an empty "
-        "sum is returned as zero."
-    ),
-    "has_receipt_history": (
-        "Indicator that at least one goods-receipt record of any sign exists for the "
-        "article-store series strictly before the origin. Sales-day activity is not "
-        "considered."
-    ),
-}
-
-# Keep the definitions above as documentation for the ablation study while exposing
-# descriptions only for features in the active production contract.
-FEATURE_DESCRIPTIONS = {
-    name: description
-    for name, description in FEATURE_DESCRIPTIONS.items()
-    if name in FEATURE_COLUMNS
 }
 
 if set(FEATURE_DESCRIPTIONS) != set(FEATURE_COLUMNS):
@@ -829,13 +712,41 @@ def _annual_offset_calendar(start: object, end: object) -> pd.DataFrame:
     )
 
 
-def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
-    """Create reusable pre-origin feature tables from ``benchmark_daily_rows``."""
+def create_feature_tables(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    origins: Iterable[object],
+    design: BenchmarkDesign,
+) -> None:
+    """Create per-origin feature snapshots from ``benchmark_daily_rows``.
+
+    The expensive history resolution (ASOF joins over the full daily table)
+    runs here exactly once for every supplied origin; the per-origin feature
+    query afterwards only performs cheap equality joins against the resulting
+    snapshot tables. Feature queries may therefore only request origins that
+    were supplied to this function.
+    """
     bounds = con.execute(
         "SELECT MIN(period), MAX(period) FROM benchmark_daily_rows"
     ).fetchone()
     if bounds is None or bounds[0] is None:
         raise RuntimeError("benchmark_daily_rows is empty")
+    con.register("ml_snapshot_origin_frame", _normalized_origins(origins))
+    con.execute(
+        "CREATE OR REPLACE TABLE ml_snapshot_origins AS "
+        "SELECT * FROM ml_snapshot_origin_frame"
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE ml_target_dates AS
+        SELECT DISTINCT
+            (o.origin + target_offset.day_offset * INTERVAL 1 DAY)::DATE
+                AS target_period
+        FROM ml_snapshot_origins AS o
+        CROSS JOIN range({int(design.forecast_horizon_days)})
+            AS target_offset(day_offset)
+        """
+    )
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE ml_series AS
@@ -846,11 +757,11 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.register("ml_calendar_frame", _holiday_calendar(bounds[0], bounds[1]))
     con.execute(
-        "CREATE OR REPLACE TEMP TABLE ml_calendar AS SELECT * FROM ml_calendar_frame"
+        "CREATE OR REPLACE TABLE ml_calendar AS SELECT * FROM ml_calendar_frame"
     )
     con.execute(
         """
-        CREATE OR REPLACE TEMP TABLE ml_store_closure_features AS
+        CREATE OR REPLACE TABLE ml_store_closure_features AS
         WITH store_calendar AS (
             SELECT
                 MARKT_ID,
@@ -915,7 +826,7 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
         _annual_offset_calendar(bounds[0], bounds[1]),
     )
     con.execute(
-        "CREATE OR REPLACE TEMP TABLE ml_annual_offsets AS "
+        "CREATE OR REPLACE TABLE ml_annual_offsets AS "
         "SELECT * FROM ml_annual_offset_frame"
     )
     con.execute(
@@ -942,13 +853,14 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.execute(
         """
-        CREATE OR REPLACE TEMP TABLE ml_series_annual_features AS
+        CREATE OR REPLACE TABLE ml_series_annual_features AS
         WITH annual_references AS (
             SELECT
                 history.ARTIKEL_ID,
                 history.MARKT_ID,
                 offsets.target_period
             FROM ml_annual_offsets AS offsets
+            INNER JOIN ml_target_dates USING (target_period)
             INNER JOIN benchmark_daily_rows AS history
                 ON history.period = offsets.target_period
                     - offsets.last_year_offset * INTERVAL 1 DAY
@@ -974,57 +886,87 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.execute(
         """
-        CREATE OR REPLACE TEMP TABLE ml_series_weekly_annual_features AS
+        CREATE OR REPLACE TABLE ml_series_weekly_annual_features AS
+        WITH requested_reference_weeks AS (
+            SELECT DISTINCT
+                (
+                    DATE_TRUNC('week', offsets.target_period)
+                    - offsets.last_year_offset * INTERVAL 1 DAY
+                )::DATE AS reference_week_start
+            FROM ml_annual_offsets AS offsets
+            INNER JOIN ml_target_dates USING (target_period)
+        )
         SELECT
             ARTIKEL_ID,
             MARKT_ID,
             DATE_TRUNC('week', period)::DATE AS reference_week_start,
             AVG(demand) FILTER (WHERE is_active) AS same_week_last_year_mean
         FROM benchmark_daily_rows
+        WHERE DATE_TRUNC('week', period)::DATE
+            IN (SELECT reference_week_start FROM requested_reference_weeks)
         GROUP BY ARTIKEL_ID, MARKT_ID, DATE_TRUNC('week', period)
         """
     )
     con.execute(
         """
-        CREATE OR REPLACE TEMP TABLE ml_series_lag_features AS
+        CREATE OR REPLACE TABLE ml_series_lag_features AS
         -- Single-date RANGE frames return the exact period - 7/14 row when it
         -- exists and NULL otherwise, matching a LEFT JOIN on the exact date.
-        SELECT
-            ARTIKEL_ID,
-            MARKT_ID,
-            period,
-            MAX(demand) OVER lag_7 AS same_weekday_lag_7,
-            MAX(demand) OVER lag_14 AS same_weekday_lag_14
-        FROM benchmark_daily_rows
-        WINDOW
-            lag_7 AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID
-                ORDER BY period
-                RANGE BETWEEN INTERVAL 7 DAY PRECEDING
-                    AND INTERVAL 7 DAY PRECEDING
-            ),
-            lag_14 AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID
-                ORDER BY period
-                RANGE BETWEEN INTERVAL 14 DAY PRECEDING
-                    AND INTERVAL 14 DAY PRECEDING
-            )
+        -- The window runs over the full history; only rows on requested
+        -- target dates are stored because only those are ever joined.
+        SELECT * FROM (
+            SELECT
+                ARTIKEL_ID,
+                MARKT_ID,
+                period,
+                MAX(demand) OVER lag_7 AS same_weekday_lag_7,
+                MAX(demand) OVER lag_14 AS same_weekday_lag_14
+            FROM benchmark_daily_rows
+            WINDOW
+                lag_7 AS (
+                    PARTITION BY ARTIKEL_ID, MARKT_ID
+                    ORDER BY period
+                    RANGE BETWEEN INTERVAL 7 DAY PRECEDING
+                        AND INTERVAL 7 DAY PRECEDING
+                ),
+                lag_14 AS (
+                    PARTITION BY ARTIKEL_ID, MARKT_ID
+                    ORDER BY period
+                    RANGE BETWEEN INTERVAL 14 DAY PRECEDING
+                        AND INTERVAL 14 DAY PRECEDING
+                )
+        )
+        WHERE period IN (SELECT target_period FROM ml_target_dates)
         """
     )
     con.execute(
-        """
-        CREATE OR REPLACE TEMP TABLE ml_series_centered_7_features AS
-        SELECT
-            ARTIKEL_ID,
-            MARKT_ID,
-            period AS reference_period,
-            AVG(demand) FILTER (WHERE is_active) OVER (
-                PARTITION BY ARTIKEL_ID, MARKT_ID
-                ORDER BY period
-                RANGE BETWEEN INTERVAL 3 DAY PRECEDING
-                    AND INTERVAL 3 DAY FOLLOWING
-            ) AS centered_7_demand_mean
-        FROM benchmark_daily_rows
+        f"""
+        CREATE OR REPLACE TABLE ml_series_centered_7_features AS
+        -- The centered mean is computed over the full history; only reference
+        -- dates reachable from requested target dates are stored because the
+        -- event-offset join can only probe those.
+        SELECT * FROM (
+            SELECT
+                ARTIKEL_ID,
+                MARKT_ID,
+                period AS reference_period,
+                AVG(demand) FILTER (WHERE is_active) OVER (
+                    PARTITION BY ARTIKEL_ID, MARKT_ID
+                    ORDER BY period
+                    RANGE BETWEEN INTERVAL 3 DAY PRECEDING
+                        AND INTERVAL 3 DAY FOLLOWING
+                ) AS centered_7_demand_mean
+            FROM benchmark_daily_rows
+        )
+        WHERE reference_period IN (
+            SELECT event_calendar.previous_event_offset_date
+            FROM ml_calendar AS event_calendar
+            INNER JOIN ml_target_dates
+                ON event_calendar.period = ml_target_dates.target_period
+            WHERE event_calendar.previous_event_offset_date IS NOT NULL
+                AND ABS(event_calendar.days_to_nearest_event)
+                    <= {MAX_EVENT_OFFSET_DAYS}
+        )
         """
     )
 
@@ -1274,12 +1216,13 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.execute(
         """
-        CREATE OR REPLACE TEMP TABLE ml_product_annual_features AS
+        CREATE OR REPLACE TABLE ml_product_annual_features AS
         WITH annual_references AS (
             SELECT
                 history.ARTIKEL_ID,
                 offsets.target_period
             FROM ml_annual_offsets AS offsets
+            INNER JOIN ml_target_dates USING (target_period)
             INNER JOIN ml_product_daily AS history
                 ON history.period = offsets.target_period
                     - offsets.last_year_offset * INTERVAL 1 DAY
@@ -1338,89 +1281,17 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
-    abs_path = _parquet_expr_if_available(ABSCHRIFTEN_FEATURES_PATH)
-    if abs_path == "''":
-        con.execute(
-            """
-            CREATE OR REPLACE TEMP TABLE ml_spoilage_q_features AS
-            SELECT
-                CAST(NULL AS BIGINT) AS ARTIKEL_ID,
-                CAST(NULL AS BIGINT) AS MARKT_ID,
-                CAST(NULL AS DATE) AS period,
-                CAST(NULL AS DOUBLE) AS spoilage_qty
-            WHERE FALSE
-            """
-        )
-    else:
-        con.execute(
-            f"""
-            CREATE OR REPLACE TEMP TABLE ml_spoilage_q_features AS
-            SELECT
-                ARTIKEL_ID,
-                MARKT_ID,
-                CAST(DATE AS DATE) AS period,
-                CAST(IST_ABSCHRIFTEN_MENGE AS DOUBLE) AS spoilage_qty
-            FROM read_parquet('{abs_path}')
-            WHERE ABSCHRIFT_ART = 'Q'
-            """
-        )
-
-    receipt_path = _parquet_expr_if_available(WARENEINGAENGE_FEATURES_PATH)
-    if receipt_path == "''":
-        con.execute(
-            """
-            CREATE OR REPLACE TEMP TABLE ml_receipt_features AS
-            SELECT
-                CAST(NULL AS BIGINT) AS ARTIKEL_ID,
-                CAST(NULL AS BIGINT) AS MARKT_ID,
-                CAST(NULL AS DATE) AS period,
-                CAST(NULL AS DOUBLE) AS we_menge_vke
-            WHERE FALSE
-            """
-        )
-    else:
-        con.execute(
-            f"""
-            CREATE OR REPLACE TEMP TABLE ml_receipt_features AS
-            SELECT
-                ARTIKEL_ID,
-                MARKT_ID,
-                CAST(DATE AS DATE) AS period,
-                CAST(WE_MENGE_VKE AS DOUBLE) AS we_menge_vke
-            FROM read_parquet('{receipt_path}')
-            """
-        )
-
-
-def _normalized_origins(origins: Iterable[object]) -> pd.DataFrame:
-    values = pd.DatetimeIndex(origins).normalize().unique().sort_values()
-    if len(values) == 0:
-        raise ValueError("At least one origin is required")
-    return pd.DataFrame({"origin": values.date})
-
-
-def _feature_query_statement(
-    con: duckdb.DuckDBPyConnection,
-    origins: Iterable[object],
-    design: BenchmarkDesign,
-    *,
-    order_results: bool = True,
-) -> tuple[str, list[object]]:
-    """Return the registered-origin feature query and its parameters."""
-    con.register("ml_requested_origin_frame", _normalized_origins(origins))
+    # Resolve every history ASOF join once for all snapshot origins. The
+    # per-origin feature query then only equality-joins these snapshots, so
+    # the full-history tables can be dropped afterwards to free memory.
     con.execute(
-        "CREATE OR REPLACE TEMP TABLE ml_requested_origins AS "
-        "SELECT * FROM ml_requested_origin_frame"
-    )
-    return (
         f"""
+        CREATE OR REPLACE TABLE ml_origin_features AS
         WITH origin_series AS (
             SELECT s.*, o.origin
             FROM ml_series AS s
-            CROSS JOIN ml_requested_origins AS o
+            CROSS JOIN ml_snapshot_origins AS o
         ),
-    -- Spoilage and goods-receipt history joins are disabled together with their
-    -- feature columns. Keep their source tables available for future ablations.
         origin_history_base AS (
             SELECT
                 s.*,
@@ -1436,7 +1307,7 @@ def _feature_query_statement(
                 AND s.origin > f.feature_date
             -- Prune immature series before every later ASOF join so those
             -- joins run only over series that survive the maturity gate.
-            WHERE f.active_days >= ?
+            WHERE f.active_days >= {int(design.min_active_days)}
         ),
         origin_history_with_gaps AS (
             SELECT
@@ -1488,13 +1359,160 @@ def _feature_query_statement(
                 ON h.MARKT_ID = x.MARKT_ID
                 AND h.category_id = x.category_id
                 AND h.origin > x.feature_date
-        ),
-        origin_history_with_action_lift AS (
-            SELECT h.*, a.mean_action_lift_in_sourcing_group
-            FROM origin_history_with_store_category AS h
-            ASOF LEFT JOIN ml_sourcing_group_action_features AS a
-                ON h.sourcing_group = a.sourcing_group
-                AND h.origin > a.feature_date
+        )
+        SELECT h.*, a.mean_action_lift_in_sourcing_group
+        FROM origin_history_with_store_category AS h
+        ASOF LEFT JOIN ml_sourcing_group_action_features AS a
+            ON h.sourcing_group = a.sourcing_group
+            AND h.origin > a.feature_date
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_origin_weekday_features AS
+        WITH probe AS (
+            SELECT
+                series_origin.ARTIKEL_ID,
+                series_origin.MARKT_ID,
+                series_origin.origin,
+                weekday.target_weekday::INTEGER AS target_weekday
+            FROM (
+                SELECT DISTINCT ARTIKEL_ID, MARKT_ID, origin
+                FROM ml_origin_features
+            ) AS series_origin
+            CROSS JOIN range(1, 8) AS weekday(target_weekday)
+        )
+        SELECT
+            probe.ARTIKEL_ID,
+            probe.MARKT_ID,
+            probe.origin,
+            probe.target_weekday,
+            w.same_weekday_mean_4,
+            w.same_weekday_mean_8
+        FROM probe
+        ASOF LEFT JOIN ml_series_weekday_features AS w
+            ON probe.ARTIKEL_ID = w.ARTIKEL_ID
+            AND probe.MARKT_ID = w.MARKT_ID
+            AND probe.target_weekday = w.target_weekday
+            AND probe.origin > w.feature_date
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_origin_product_weekday_features AS
+        WITH probe AS (
+            SELECT
+                product_origin.ARTIKEL_ID,
+                product_origin.origin,
+                weekday.target_weekday::INTEGER AS target_weekday
+            FROM (
+                SELECT DISTINCT ARTIKEL_ID, origin
+                FROM ml_origin_features
+            ) AS product_origin
+            CROSS JOIN range(1, 8) AS weekday(target_weekday)
+        )
+        SELECT
+            probe.ARTIKEL_ID,
+            probe.origin,
+            probe.target_weekday,
+            x.product_weekday_demand_8
+        FROM probe
+        ASOF LEFT JOIN ml_product_weekday_features AS x
+            ON probe.ARTIKEL_ID = x.ARTIKEL_ID
+            AND probe.target_weekday = x.target_weekday
+            AND probe.origin > x.feature_date
+        """
+    )
+    # The feature query runs on separate cursors when origins are materialized
+    # in parallel. Cursors cannot see this connection's TEMP tables, so the
+    # two benchmark-owned inputs it needs are copied into the shared schema.
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_target_rows AS
+        SELECT
+            ARTIKEL_ID,
+            MARKT_ID,
+            period,
+            demand,
+            is_active,
+            reason_closed,
+            action_flag
+        FROM benchmark_daily_rows
+        WHERE period IN (SELECT target_period FROM ml_target_dates)
+        """
+    )
+    history_tables = {
+        row[0] for row in con.execute("SHOW TABLES").fetchall()
+    }
+    if "benchmark_origin_history" not in history_tables:
+        raise RuntimeError(
+            "benchmark_origin_history is missing; run create_history_features "
+            "and _create_assessed_origins before create_feature_tables"
+        )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_origin_history_scale AS
+        SELECT ARTIKEL_ID, MARKT_ID, origin, seasonal_mase_scale
+        FROM benchmark_origin_history
+        """
+    )
+    for resolved_table in (
+        "ml_series_features",
+        "ml_gap_statistics",
+        "ml_series_weekday_features",
+        "ml_product_features",
+        "ml_product_weekday_features",
+        "ml_store_category_features",
+        "ml_sourcing_group_action_features",
+        "ml_product_daily",
+        "ml_annual_reference_dates",
+    ):
+        con.execute(f"DROP TABLE IF EXISTS {resolved_table}")
+
+
+def _normalized_origins(origins: Iterable[object]) -> pd.DataFrame:
+    values = pd.DatetimeIndex(origins).normalize().unique().sort_values()
+    if len(values) == 0:
+        raise ValueError("At least one origin is required")
+    return pd.DataFrame({"origin": values.date})
+
+
+def _feature_query_statement(
+    con: duckdb.DuckDBPyConnection,
+    origins: Iterable[object],
+    design: BenchmarkDesign,
+    *,
+    order_results: bool = True,
+) -> tuple[str, list[object]]:
+    """Return the registered-origin feature query and its parameters."""
+    con.register("ml_requested_origin_frame", _normalized_origins(origins))
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE ml_requested_origins AS "
+        "SELECT * FROM ml_requested_origin_frame"
+    )
+    try:
+        uncovered = con.execute(
+            """
+            SELECT COUNT(*) FROM ml_requested_origins
+            WHERE origin NOT IN (SELECT origin FROM ml_snapshot_origins)
+            """
+        ).fetchone()[0]
+    except duckdb.CatalogException as error:
+        raise RuntimeError(
+            "Feature snapshots are missing; run create_feature_tables with "
+            "the requested origins first"
+        ) from error
+    if uncovered:
+        raise ValueError(
+            "Feature query requested origins outside the snapshot set; "
+            "rerun create_feature_tables with all required origins"
+        )
+    return (
+        f"""
+        WITH origin_history_with_action_lift AS (
+            SELECT h.*
+            FROM ml_origin_features AS h
+            INNER JOIN ml_requested_origins USING (origin)
         ),
         target_dates AS (
             SELECT
@@ -1530,7 +1548,7 @@ def _feature_query_statement(
                 lags.same_weekday_lag_7,
                 lags.same_weekday_lag_14
             FROM target_dates AS h
-            INNER JOIN benchmark_daily_rows AS t
+            INNER JOIN ml_target_rows AS t
                 ON h.ARTIKEL_ID = t.ARTIKEL_ID
                 AND h.MARKT_ID = t.MARKT_ID
                 AND t.period = h.target_period
@@ -1578,19 +1596,25 @@ def _feature_query_statement(
         with_weekday AS (
             SELECT t.*, w.same_weekday_mean_4, w.same_weekday_mean_8
             FROM with_annual_history AS t
-            ASOF LEFT JOIN ml_series_weekday_features AS w
+            LEFT JOIN (
+                SELECT * FROM ml_origin_weekday_features
+                WHERE origin IN (SELECT origin FROM ml_requested_origins)
+            ) AS w
                 ON t.ARTIKEL_ID = w.ARTIKEL_ID
                 AND t.MARKT_ID = w.MARKT_ID
+                AND t.origin = w.origin
                 AND t.target_weekday = w.target_weekday
-                AND t.origin > w.feature_date
         ),
         with_product_weekday AS (
             SELECT p.*, x.product_weekday_demand_8
             FROM with_weekday AS p
-            ASOF LEFT JOIN ml_product_weekday_features AS x
+            LEFT JOIN (
+                SELECT * FROM ml_origin_product_weekday_features
+                WHERE origin IN (SELECT origin FROM ml_requested_origins)
+            ) AS x
                 ON p.ARTIKEL_ID = x.ARTIKEL_ID
+                AND p.origin = x.origin
                 AND p.target_weekday = x.target_weekday
-                AND p.origin > x.feature_date
         )
         SELECT
             p.ARTIKEL_ID,
@@ -1643,9 +1667,6 @@ def _feature_query_statement(
             p.ADI,
             p.CV2,
             p.product_cross_store_mean_28,
-            -- Spoilage and goods-receipt features are intentionally disabled after
-            -- feature-group ablation. Their upstream definitions remain available
-            -- so the groups can be restored without reconstructing the SQL pipeline.
             CASE
                 WHEN p.product_demand_56 > 0
                     THEN p.product_weekday_demand_8 / p.product_demand_56
@@ -1666,13 +1687,13 @@ def _feature_query_statement(
             END AS target_mean
         FROM with_product_weekday AS p
         INNER JOIN ml_calendar AS c USING (period)
-        LEFT JOIN benchmark_origin_history AS h
+        LEFT JOIN ml_origin_history_scale AS h
             ON p.ARTIKEL_ID = h.ARTIKEL_ID
             AND p.MARKT_ID = h.MARKT_ID
             AND p.origin = h.origin
         {"ORDER BY p.origin, p.ARTIKEL_ID, p.MARKT_ID, p.period" if order_results else ""}
         """,
-        [design.min_active_days],
+        [],
     )
 
 
@@ -1797,7 +1818,8 @@ def prepare_global_lightgbm_frames(
     config = GlobalLightGBMConfig() if config is None else config
     data_dir = design.data_dir if data_dir is None else Path(data_dir)
     con = duckdb.connect() if connection is None else connection
-    con.execute(f"PRAGMA threads={int(config.num_threads)}")
+    # num_threads only limits LightGBM training; DuckDB keeps its default of
+    # one thread per logical processor for the feature build.
     tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
     if "benchmark_daily_rows" not in tables:
         prepare_daily_rows(con, data_dir=data_dir)
@@ -1852,7 +1874,7 @@ def prepare_global_lightgbm_frames(
     if force_feature_recompute or not _feature_cache_covers(
         con, feature_dataset_path, all_frame_origins
     ):
-        create_feature_tables(con)
+        create_feature_tables(con, origins=all_frame_origins, design=design)
     feature_frame = get_or_materialize_feature_frame(
         con,
         origins=all_frame_origins,
