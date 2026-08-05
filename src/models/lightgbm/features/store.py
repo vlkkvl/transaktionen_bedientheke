@@ -1,6 +1,7 @@
 """Validated, origin-partitioned feature cache shared by LightGBM models."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import threading
 from typing import Iterator
 
 import duckdb
@@ -24,7 +26,7 @@ from src.models.lightgbm.features.builder import (
 
 FEATURE_SET_NAME = "lightgbm_daily"
 FEATURE_SET_VERSION = "1"
-FEATURE_BUILDER_VERSION = "2026-08-05.4"
+FEATURE_BUILDER_VERSION = "2026-08-05.5"
 DEFAULT_FEATURE_STORE_DIR = ROOT / "data" / "processed" / "model_features"
 
 
@@ -180,6 +182,63 @@ class LightGBMFeatureStore:
             file.write("\n")
         temporary.replace(path)
 
+    @staticmethod
+    def _materialize_missing(
+        con: duckdb.DuckDBPyConnection,
+        missing: list[tuple[pd.Timestamp, Path]],
+        design: BenchmarkDesign,
+        *,
+        max_workers: int | None = None,
+    ) -> None:
+        """Materialize origin partitions concurrently on separate cursors.
+
+        ``create_feature_tables`` leaves everything the feature query reads in
+        the shared (non-temporary) schema, so each worker can run the query on
+        its own cursor of the same database. Every worker writes only its own
+        partition file, making the workers independent.
+        """
+        workers = max_workers if max_workers is not None else min(4, os.cpu_count() or 1)
+        workers = max(1, min(int(workers), len(missing)))
+        completed = 0
+        progress_lock = threading.Lock()
+
+        def build(item: tuple[pd.Timestamp, Path]) -> None:
+            nonlocal completed
+            origin, path = item
+            cursor = con.cursor()
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                materialize_features_for_origins(
+                    cursor,
+                    origins=[origin],
+                    design=design,
+                    feature_path=path,
+                    return_frame=False,
+                )
+            finally:
+                cursor.close()
+            with progress_lock:
+                completed += 1
+                print(
+                    f"[features {completed}/{len(missing)}] "
+                    f"Materialized origin {origin.date()}",
+                    flush=True,
+                )
+
+        if workers == 1:
+            for item in missing:
+                build(item)
+            return
+        print(
+            f"[features] Materializing {len(missing)} origins with "
+            f"{workers} parallel workers...",
+            flush=True,
+        )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(build, item) for item in missing]
+            for future in futures:
+                future.result()
+
     def ensure(
         self,
         con: duckdb.DuckDBPyConnection,
@@ -187,6 +246,7 @@ class LightGBMFeatureStore:
         origins: pd.DatetimeIndex,
         design: BenchmarkDesign,
         rebuild: bool = False,
+        max_workers: int | None = None,
     ) -> FeatureDataset:
         """Return valid partitions, materializing only absent or invalid origins."""
         normalized = pd.DatetimeIndex(origins).normalize().unique().sort_values()
@@ -224,21 +284,10 @@ class LightGBMFeatureStore:
                         if not self._partition_valid(con, path, origin)
                     ]
                 if missing:
-                    create_feature_tables(con)
-                    for position, (origin, path) in enumerate(missing, start=1):
-                        print(
-                            f"[features {position}/{len(missing)}] "
-                            f"Materializing origin {origin.date()}...",
-                            flush=True,
-                        )
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        materialize_features_for_origins(
-                            con,
-                            origins=[origin],
-                            design=design,
-                            feature_path=path,
-                            return_frame=False,
-                        )
+                    create_feature_tables(con, origins=normalized, design=design)
+                    self._materialize_missing(
+                        con, missing, design, max_workers=max_workers
+                    )
                 available = sorted(
                     part.parent.name.removeprefix("origin=")
                     for part in directory.glob("origin=*/features.parquet")

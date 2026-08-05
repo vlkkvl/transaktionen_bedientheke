@@ -157,7 +157,7 @@ def iter_run_frames(
                 f"to {requested_path}...",
                 flush=True,
             )
-            create_feature_tables(con)
+            create_feature_tables(con, origins=required_origins, design=design)
             materialize_features_for_origins(
                 con,
                 origins=required_origins,
@@ -388,9 +388,8 @@ def run_specs(
     owns_connection = connection is None
     con = duckdb.connect() if connection is None else connection
     con.execute("SET temp_directory='/tmp/ba_lightgbm_family_duckdb'")
-    con.execute(
-        f"SET threads={max(config.runtime.num_threads for config in resolved_configs.values())}"
-    )
+    # runtime.num_threads only limits LightGBM training; DuckDB keeps its
+    # default of one thread per logical processor for the feature build.
     con.execute("SET preserve_insertion_order=false")
     writers = {
         spec.name: _StreamingResultWriter(spec.name, design, results_dir)
