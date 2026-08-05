@@ -36,7 +36,28 @@ WARENEINGAENGE_FEATURES_PATH = (
 MIN_COMPLETED_GAPS_FOR_P90 = 10
 MAX_EVENT_OFFSET_DAYS = 10
 FEATURE_ORIGIN_BATCH_SIZE = 4
-REMOVED_FEATURE_COLUMNS = frozenset({"lag_364", "lag_371"})
+SPOILAGE_FEATURE_COLUMNS = (
+    "spoilage_qty_last_28d",
+    "spoilage_days_last_28d",
+    "days_since_last_spoilage",
+    "has_any_spoilage_history",
+)
+GOODS_RECEIPT_FEATURE_COLUMNS = (
+    "receipt_qty_pos_last_7d",
+    "receipt_qty_pos_last_14d",
+    "receipt_qty_pos_last_28d",
+    "receipt_days_last_28d",
+    "days_since_last_receipt",
+    "receipt_qty_net_last_28d",
+    "receipt_negative_qty_last_28d",
+    "has_receipt_history",
+)
+DISABLED_OPERATIONAL_FEATURE_COLUMNS = frozenset(
+    (*SPOILAGE_FEATURE_COLUMNS, *GOODS_RECEIPT_FEATURE_COLUMNS)
+)
+REMOVED_FEATURE_COLUMNS = frozenset(
+    {"lag_364", "lag_371", *DISABLED_OPERATIONAL_FEATURE_COLUMNS}
+)
 
 
 def get_last_year_offset(current_date: object) -> int:
@@ -184,20 +205,20 @@ FEATURE_COLUMNS = (
     "product_cross_store_mean_28",
     "product_weekday_profile_value",
     "store_category_mean_28",
-    # Spoilage
-    "spoilage_qty_last_28d",
-    "spoilage_days_last_28d",
-    "days_since_last_spoilage",
-    "has_any_spoilage_history",
-    # Goods receipts
-    "receipt_qty_pos_last_7d",
-    "receipt_qty_pos_last_14d",
-    "receipt_qty_pos_last_28d",
-    "receipt_days_last_28d",
-    "days_since_last_receipt",
-    "receipt_qty_net_last_28d",
-    "receipt_negative_qty_last_28d",
-    "has_receipt_history",
+    # Spoilage (disabled after feature-group ablation)
+    # "spoilage_qty_last_28d",
+    # "spoilage_days_last_28d",
+    # "days_since_last_spoilage",
+    # "has_any_spoilage_history",
+    # Goods receipts (disabled after feature-group ablation)
+    # "receipt_qty_pos_last_7d",
+    # "receipt_qty_pos_last_14d",
+    # "receipt_qty_pos_last_28d",
+    # "receipt_days_last_28d",
+    # "days_since_last_receipt",
+    # "receipt_qty_net_last_28d",
+    # "receipt_negative_qty_last_28d",
+    # "has_receipt_history",
 )
 
 FEATURE_DESCRIPTIONS = {
@@ -533,6 +554,14 @@ FEATURE_DESCRIPTIONS = {
     ),
 }
 
+# Keep the definitions above as documentation for the ablation study while exposing
+# descriptions only for features in the active production contract.
+FEATURE_DESCRIPTIONS = {
+    name: description
+    for name, description in FEATURE_DESCRIPTIONS.items()
+    if name in FEATURE_COLUMNS
+}
+
 if set(FEATURE_DESCRIPTIONS) != set(FEATURE_COLUMNS):
     missing = sorted(set(FEATURE_COLUMNS) - set(FEATURE_DESCRIPTIONS))
     unexpected = sorted(set(FEATURE_DESCRIPTIONS) - set(FEATURE_COLUMNS))
@@ -807,6 +836,14 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     ).fetchone()
     if bounds is None or bounds[0] is None:
         raise RuntimeError("benchmark_daily_rows is empty")
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE ml_series AS
+        SELECT DISTINCT
+            ARTIKEL_ID, MARKT_ID, sourcing_group, category_id
+        FROM benchmark_daily_rows
+        """
+    )
     con.register("ml_calendar_frame", _holiday_calendar(bounds[0], bounds[1]))
     con.execute(
         "CREATE OR REPLACE TEMP TABLE ml_calendar AS SELECT * FROM ml_calendar_frame"
@@ -822,48 +859,55 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
             FROM benchmark_daily_rows
             GROUP BY MARKT_ID, period
         )
+        -- Calendar-day RANGE frames skip missing store-dates, matching the
+        -- COALESCE(FALSE) semantics of exact-offset self joins.
         SELECT
-            current_day.MARKT_ID,
-            current_day.period,
-            COALESCE(next_1.is_closed, FALSE)::INTEGER AS closed_days_next_1,
-            (
-                COALESCE(next_1.is_closed, FALSE)::INTEGER
-                + COALESCE(next_2.is_closed, FALSE)::INTEGER
-            ) AS closed_days_next_2,
-            (
-                COALESCE(next_1.is_closed, FALSE)::INTEGER
-                + COALESCE(next_2.is_closed, FALSE)::INTEGER
-                + COALESCE(next_3.is_closed, FALSE)::INTEGER
-            ) AS closed_days_next_3,
-            COALESCE(previous_1.is_closed, FALSE)::INTEGER AS closed_days_prev_1,
-            (
-                COALESCE(previous_1.is_closed, FALSE)::INTEGER
-                + COALESCE(previous_2.is_closed, FALSE)::INTEGER
-            ) AS closed_days_prev_2,
-            (
-                COALESCE(previous_1.is_closed, FALSE)::INTEGER
-                + COALESCE(previous_2.is_closed, FALSE)::INTEGER
-                + COALESCE(previous_3.is_closed, FALSE)::INTEGER
-            ) AS closed_days_prev_3
-        FROM store_calendar AS current_day
-        LEFT JOIN store_calendar AS next_1
-            ON current_day.MARKT_ID = next_1.MARKT_ID
-            AND next_1.period = current_day.period + INTERVAL 1 DAY
-        LEFT JOIN store_calendar AS next_2
-            ON current_day.MARKT_ID = next_2.MARKT_ID
-            AND next_2.period = current_day.period + INTERVAL 2 DAY
-        LEFT JOIN store_calendar AS next_3
-            ON current_day.MARKT_ID = next_3.MARKT_ID
-            AND next_3.period = current_day.period + INTERVAL 3 DAY
-        LEFT JOIN store_calendar AS previous_1
-            ON current_day.MARKT_ID = previous_1.MARKT_ID
-            AND previous_1.period = current_day.period - INTERVAL 1 DAY
-        LEFT JOIN store_calendar AS previous_2
-            ON current_day.MARKT_ID = previous_2.MARKT_ID
-            AND previous_2.period = current_day.period - INTERVAL 2 DAY
-        LEFT JOIN store_calendar AS previous_3
-            ON current_day.MARKT_ID = previous_3.MARKT_ID
-            AND previous_3.period = current_day.period - INTERVAL 3 DAY
+            MARKT_ID,
+            period,
+            COALESCE(COUNT_IF(is_closed) OVER next_1, 0)::INTEGER
+                AS closed_days_next_1,
+            COALESCE(COUNT_IF(is_closed) OVER next_2, 0)::INTEGER
+                AS closed_days_next_2,
+            COALESCE(COUNT_IF(is_closed) OVER next_3, 0)::INTEGER
+                AS closed_days_next_3,
+            COALESCE(COUNT_IF(is_closed) OVER previous_1, 0)::INTEGER
+                AS closed_days_prev_1,
+            COALESCE(COUNT_IF(is_closed) OVER previous_2, 0)::INTEGER
+                AS closed_days_prev_2,
+            COALESCE(COUNT_IF(is_closed) OVER previous_3, 0)::INTEGER
+                AS closed_days_prev_3
+        FROM store_calendar
+        WINDOW
+            next_1 AS (
+                PARTITION BY MARKT_ID ORDER BY period
+                RANGE BETWEEN INTERVAL 1 DAY FOLLOWING
+                    AND INTERVAL 1 DAY FOLLOWING
+            ),
+            next_2 AS (
+                PARTITION BY MARKT_ID ORDER BY period
+                RANGE BETWEEN INTERVAL 1 DAY FOLLOWING
+                    AND INTERVAL 2 DAY FOLLOWING
+            ),
+            next_3 AS (
+                PARTITION BY MARKT_ID ORDER BY period
+                RANGE BETWEEN INTERVAL 1 DAY FOLLOWING
+                    AND INTERVAL 3 DAY FOLLOWING
+            ),
+            previous_1 AS (
+                PARTITION BY MARKT_ID ORDER BY period
+                RANGE BETWEEN INTERVAL 1 DAY PRECEDING
+                    AND INTERVAL 1 DAY PRECEDING
+            ),
+            previous_2 AS (
+                PARTITION BY MARKT_ID ORDER BY period
+                RANGE BETWEEN INTERVAL 2 DAY PRECEDING
+                    AND INTERVAL 1 DAY PRECEDING
+            ),
+            previous_3 AS (
+                PARTITION BY MARKT_ID ORDER BY period
+                RANGE BETWEEN INTERVAL 3 DAY PRECEDING
+                    AND INTERVAL 1 DAY PRECEDING
+            )
         """
     )
     con.register(
@@ -942,6 +986,33 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
     )
     con.execute(
         """
+        CREATE OR REPLACE TEMP TABLE ml_series_lag_features AS
+        -- Single-date RANGE frames return the exact period - 7/14 row when it
+        -- exists and NULL otherwise, matching a LEFT JOIN on the exact date.
+        SELECT
+            ARTIKEL_ID,
+            MARKT_ID,
+            period,
+            MAX(demand) OVER lag_7 AS same_weekday_lag_7,
+            MAX(demand) OVER lag_14 AS same_weekday_lag_14
+        FROM benchmark_daily_rows
+        WINDOW
+            lag_7 AS (
+                PARTITION BY ARTIKEL_ID, MARKT_ID
+                ORDER BY period
+                RANGE BETWEEN INTERVAL 7 DAY PRECEDING
+                    AND INTERVAL 7 DAY PRECEDING
+            ),
+            lag_14 AS (
+                PARTITION BY ARTIKEL_ID, MARKT_ID
+                ORDER BY period
+                RANGE BETWEEN INTERVAL 14 DAY PRECEDING
+                    AND INTERVAL 14 DAY PRECEDING
+            )
+        """
+    )
+    con.execute(
+        """
         CREATE OR REPLACE TEMP TABLE ml_series_centered_7_features AS
         SELECT
             ARTIKEL_ID,
@@ -986,6 +1057,10 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
                     AS demand_days_last_7,
                 COUNT_IF(is_active AND demand > 0) OVER trailing_calendar_28
                     AS demand_days_last_28,
+                COALESCE(
+                    SUM(action_flag) OVER trailing_calendar_28,
+                    0
+                )::INTEGER AS actions_last_28d,
                 COUNT_IF(is_active AND demand > 0) OVER trailing_calendar_60
                     AS demand_days_last_60
             FROM benchmark_daily_rows AS d
@@ -1057,6 +1132,7 @@ def create_feature_tables(con: duckdb.DuckDBPyConnection) -> None:
                 AS active_zero_demand_gap,
             r.demand_days_last_7,
             r.demand_days_last_28,
+            r.actions_last_28d,
             r.demand_days_last_60,
             r.rolling_7_mean,
             r.rolling_28_mean,
@@ -1323,115 +1399,28 @@ def _normalized_origins(origins: Iterable[object]) -> pd.DataFrame:
     return pd.DataFrame({"origin": values.date})
 
 
-def make_feature_frame(
+def _feature_query_statement(
     con: duckdb.DuckDBPyConnection,
     origins: Iterable[object],
     design: BenchmarkDesign,
-) -> pd.DataFrame:
-    """Return direct-horizon feature rows for mature series at supplied origins."""
+    *,
+    order_results: bool = True,
+) -> tuple[str, list[object]]:
+    """Return the registered-origin feature query and its parameters."""
     con.register("ml_requested_origin_frame", _normalized_origins(origins))
     con.execute(
         "CREATE OR REPLACE TEMP TABLE ml_requested_origins AS "
         "SELECT * FROM ml_requested_origin_frame"
     )
-    return con.execute(
+    return (
         f"""
-        WITH series AS (
-            SELECT DISTINCT
-                ARTIKEL_ID, MARKT_ID, sourcing_group, category_id
-            FROM benchmark_daily_rows
-        ),
-        origin_series AS (
+        WITH origin_series AS (
             SELECT s.*, o.origin
-            FROM series AS s
+            FROM ml_series AS s
             CROSS JOIN ml_requested_origins AS o
         ),
-    origin_action_history AS (
-        SELECT
-            os.*,
-            COALESCE(a.actions_last_28d, 0)::INTEGER AS actions_last_28d
-        FROM origin_series AS os
-        LEFT JOIN LATERAL (
-            SELECT SUM(history.action_flag) AS actions_last_28d
-            FROM benchmark_daily_rows AS history
-            WHERE os.ARTIKEL_ID = history.ARTIKEL_ID
-                AND os.MARKT_ID = history.MARKT_ID
-                AND history.period >= os.origin - INTERVAL 28 DAY
-                AND history.period < os.origin
-        ) AS a ON TRUE
-    ),
-    origin_spoilage_features AS (
-        SELECT
-            oah.*,
-            sf.spoilage_qty_last_28d,
-            sf.spoilage_days_last_28d,
-            sf.days_since_last_spoilage,
-            sf.has_any_spoilage_history
-        FROM origin_action_history AS oah
-        LEFT JOIN LATERAL (
-            SELECT
-                COALESCE(SUM(history.spoilage_qty) FILTER (
-                    WHERE history.period >= oah.origin - INTERVAL 28 DAY
-                ), 0) AS spoilage_qty_last_28d,
-                COUNT(DISTINCT history.period) FILTER (
-                    WHERE history.period >= oah.origin - INTERVAL 28 DAY
-                ) AS spoilage_days_last_28d,
-                MIN(DATE_DIFF('day', history.period, oah.origin))
-                    AS days_since_last_spoilage,
-                CASE WHEN COUNT(history.period) > 0 THEN 1 ELSE 0 END
-                    AS has_any_spoilage_history
-            FROM ml_spoilage_q_features AS history
-            WHERE oah.ARTIKEL_ID = history.ARTIKEL_ID
-                AND oah.MARKT_ID = history.MARKT_ID
-                AND history.period < oah.origin
-        ) AS sf ON TRUE
-    ),
-    origin_receipt_features AS (
-        SELECT
-            osf.*,
-            rf.receipt_qty_pos_last_7d,
-            rf.receipt_qty_pos_last_14d,
-            rf.receipt_qty_pos_last_28d,
-            rf.receipt_days_last_28d,
-            rf.days_since_last_receipt,
-            rf.receipt_qty_net_last_28d,
-            rf.receipt_negative_qty_last_28d,
-            rf.has_receipt_history
-        FROM origin_spoilage_features AS osf
-        LEFT JOIN LATERAL (
-            SELECT
-                COALESCE(SUM(history.we_menge_vke) FILTER (
-                    WHERE history.period >= osf.origin - INTERVAL 7 DAY
-                        AND history.we_menge_vke > 0
-                ), 0) AS receipt_qty_pos_last_7d,
-                COALESCE(SUM(history.we_menge_vke) FILTER (
-                    WHERE history.period >= osf.origin - INTERVAL 14 DAY
-                        AND history.we_menge_vke > 0
-                ), 0) AS receipt_qty_pos_last_14d,
-                COALESCE(SUM(history.we_menge_vke) FILTER (
-                    WHERE history.period >= osf.origin - INTERVAL 28 DAY
-                        AND history.we_menge_vke > 0
-                ), 0) AS receipt_qty_pos_last_28d,
-                COUNT(DISTINCT history.period) FILTER (
-                    WHERE history.period >= osf.origin - INTERVAL 28 DAY
-                ) AS receipt_days_last_28d,
-                MIN(DATE_DIFF('day', history.period, osf.origin))
-                    AS days_since_last_receipt,
-                COALESCE(SUM(history.we_menge_vke) FILTER (
-                    WHERE history.period >= osf.origin - INTERVAL 28 DAY
-                ), 0) AS receipt_qty_net_last_28d,
-                COALESCE(SUM(ABS(history.we_menge_vke)) FILTER (
-                    WHERE history.period >= osf.origin - INTERVAL 28 DAY
-                        AND history.we_menge_vke < 0
-                ), 0) AS receipt_negative_qty_last_28d,
-                CASE WHEN COUNT(history.period) > 0 THEN 1 ELSE 0 END
-                    AS has_receipt_history
-            FROM ml_receipt_features AS history
-            WHERE osf.ARTIKEL_ID = history.ARTIKEL_ID
-                AND osf.MARKT_ID = history.MARKT_ID
-                AND history.period < osf.origin
-        ) AS rf ON TRUE
-    ),
+    -- Spoilage and goods-receipt history joins are disabled together with their
+    -- feature columns. Keep their source tables available for future ablations.
         origin_history_base AS (
             SELECT
                 s.*,
@@ -1440,11 +1429,14 @@ def make_feature_frame(
                     AS calendar_days_since_last_demand,
                 DATE_DIFF('day', f.last_action_period, s.origin)
                     AS days_since_last_action
-            FROM origin_receipt_features AS s
+            FROM origin_series AS s
             ASOF LEFT JOIN ml_series_features AS f
                 ON s.ARTIKEL_ID = f.ARTIKEL_ID
                 AND s.MARKT_ID = f.MARKT_ID
                 AND s.origin > f.feature_date
+            -- Prune immature series before every later ASOF join so those
+            -- joins run only over series that survive the maturity gate.
+            WHERE f.active_days >= ?
         ),
         origin_history_with_gaps AS (
             SELECT
@@ -1482,6 +1474,39 @@ def make_feature_frame(
                 END AS current_gap_over_historical_p90_gap
             FROM origin_history_with_reference AS h
         ),
+        origin_history_with_product AS (
+            SELECT h.*, x.product_cross_store_mean_28, x.product_demand_56
+            FROM origin_history AS h
+            ASOF LEFT JOIN ml_product_features AS x
+                ON h.ARTIKEL_ID = x.ARTIKEL_ID
+                AND h.origin > x.feature_date
+        ),
+        origin_history_with_store_category AS (
+            SELECT h.*, x.store_category_mean_28
+            FROM origin_history_with_product AS h
+            ASOF LEFT JOIN ml_store_category_features AS x
+                ON h.MARKT_ID = x.MARKT_ID
+                AND h.category_id = x.category_id
+                AND h.origin > x.feature_date
+        ),
+        origin_history_with_action_lift AS (
+            SELECT h.*, a.mean_action_lift_in_sourcing_group
+            FROM origin_history_with_store_category AS h
+            ASOF LEFT JOIN ml_sourcing_group_action_features AS a
+                ON h.sourcing_group = a.sourcing_group
+                AND h.origin > a.feature_date
+        ),
+        target_dates AS (
+            SELECT
+                h.*,
+                (
+                    h.origin
+                    + target_offset.day_offset * INTERVAL 1 DAY
+                )::DATE AS target_period
+            FROM origin_history_with_action_lift AS h
+            CROSS JOIN range({int(design.forecast_horizon_days)})
+                AS target_offset(day_offset)
+        ),
         targets AS (
             SELECT
                 h.*,
@@ -1501,32 +1526,21 @@ def make_feature_frame(
                 t.action_flag::INTEGER AS action_on_forecast_day,
                 MAX(t.action_flag) OVER (
                     PARTITION BY h.ARTIKEL_ID, h.MARKT_ID, h.origin
-                )::INTEGER AS action_during_horizon
-            FROM origin_history AS h
+                )::INTEGER AS action_during_horizon,
+                lags.same_weekday_lag_7,
+                lags.same_weekday_lag_14
+            FROM target_dates AS h
             INNER JOIN benchmark_daily_rows AS t
                 ON h.ARTIKEL_ID = t.ARTIKEL_ID
                 AND h.MARKT_ID = t.MARKT_ID
-                AND t.period >= h.origin
-                AND t.period < h.origin + ? * INTERVAL 1 DAY
+                AND t.period = h.target_period
             INNER JOIN ml_store_closure_features AS closure
                 ON t.MARKT_ID = closure.MARKT_ID
                 AND t.period = closure.period
-            WHERE h.active_days >= ?
-        ),
-        with_calendar_history AS (
-            SELECT
-                t.*,
-                previous_week.demand AS same_weekday_lag_7,
-                two_weeks_prior.demand AS same_weekday_lag_14
-            FROM targets AS t
-            LEFT JOIN benchmark_daily_rows AS previous_week
-                ON t.ARTIKEL_ID = previous_week.ARTIKEL_ID
-                AND t.MARKT_ID = previous_week.MARKT_ID
-                AND previous_week.period = t.period - INTERVAL 7 DAY
-            LEFT JOIN benchmark_daily_rows AS two_weeks_prior
-                ON t.ARTIKEL_ID = two_weeks_prior.ARTIKEL_ID
-                AND t.MARKT_ID = two_weeks_prior.MARKT_ID
-                AND two_weeks_prior.period = t.period - INTERVAL 14 DAY
+            LEFT JOIN ml_series_lag_features AS lags
+                ON t.ARTIKEL_ID = lags.ARTIKEL_ID
+                AND t.MARKT_ID = lags.MARKT_ID
+                AND t.period = lags.period
         ),
         with_annual_history AS (
             SELECT
@@ -1536,7 +1550,7 @@ def make_feature_frame(
                 w.same_week_last_year_mean,
                 x.product_cross_store_same_weekday_last_year_mean,
                 e.centered_7_demand_mean AS same_event_offset_last_year_mean
-            FROM with_calendar_history AS t
+            FROM targets AS t
             INNER JOIN ml_annual_offsets AS annual_offset
                 ON t.period = annual_offset.target_period
             LEFT JOIN ml_series_annual_features AS a
@@ -1570,35 +1584,13 @@ def make_feature_frame(
                 AND t.target_weekday = w.target_weekday
                 AND t.origin > w.feature_date
         ),
-        with_product AS (
-            SELECT p.*, x.product_cross_store_mean_28, x.product_demand_56
-            FROM with_weekday AS p
-            ASOF LEFT JOIN ml_product_features AS x
-                ON p.ARTIKEL_ID = x.ARTIKEL_ID
-                AND p.origin > x.feature_date
-        ),
         with_product_weekday AS (
             SELECT p.*, x.product_weekday_demand_8
-            FROM with_product AS p
+            FROM with_weekday AS p
             ASOF LEFT JOIN ml_product_weekday_features AS x
                 ON p.ARTIKEL_ID = x.ARTIKEL_ID
                 AND p.target_weekday = x.target_weekday
                 AND p.origin > x.feature_date
-        ),
-        with_store_category AS (
-            SELECT p.*, x.store_category_mean_28
-            FROM with_product_weekday AS p
-            ASOF LEFT JOIN ml_store_category_features AS x
-                ON p.MARKT_ID = x.MARKT_ID
-                AND p.category_id = x.category_id
-                AND p.origin > x.feature_date
-        ),
-        with_action_lift AS (
-            SELECT p.*, a.mean_action_lift_in_sourcing_group
-            FROM with_store_category AS p
-            ASOF LEFT JOIN ml_sourcing_group_action_features AS a
-                ON p.sourcing_group = a.sourcing_group
-                AND p.origin > a.feature_date
         )
         SELECT
             p.ARTIKEL_ID,
@@ -1651,19 +1643,9 @@ def make_feature_frame(
             p.ADI,
             p.CV2,
             p.product_cross_store_mean_28,
-            COALESCE(p.spoilage_qty_last_28d, 0) AS spoilage_qty_last_28d,
-            COALESCE(p.spoilage_days_last_28d, 0) AS spoilage_days_last_28d,
-            p.days_since_last_spoilage,
-            p.has_any_spoilage_history,
-            COALESCE(p.receipt_qty_pos_last_7d, 0) AS receipt_qty_pos_last_7d,
-            COALESCE(p.receipt_qty_pos_last_14d, 0) AS receipt_qty_pos_last_14d,
-            COALESCE(p.receipt_qty_pos_last_28d, 0) AS receipt_qty_pos_last_28d,
-            COALESCE(p.receipt_days_last_28d, 0) AS receipt_days_last_28d,
-            p.days_since_last_receipt,
-            COALESCE(p.receipt_qty_net_last_28d, 0) AS receipt_qty_net_last_28d,
-            COALESCE(p.receipt_negative_qty_last_28d, 0)
-                AS receipt_negative_qty_last_28d,
-            p.has_receipt_history,
+            -- Spoilage and goods-receipt features are intentionally disabled after
+            -- feature-group ablation. Their upstream definitions remain available
+            -- so the groups can be restored without reconstructing the SQL pipeline.
             CASE
                 WHEN p.product_demand_56 > 0
                     THEN p.product_weekday_demand_8 / p.product_demand_56
@@ -1682,19 +1664,39 @@ def make_feature_frame(
                 WHEN p.target_mean > 0 THEN p.target_mean
                 ELSE 1.0
             END AS target_mean
-        FROM with_action_lift AS p
+        FROM with_product_weekday AS p
         INNER JOIN ml_calendar AS c USING (period)
         LEFT JOIN benchmark_origin_history AS h
             ON p.ARTIKEL_ID = h.ARTIKEL_ID
             AND p.MARKT_ID = h.MARKT_ID
             AND p.origin = h.origin
-        ORDER BY p.origin, p.ARTIKEL_ID, p.MARKT_ID, p.period
+        {"ORDER BY p.origin, p.ARTIKEL_ID, p.MARKT_ID, p.period" if order_results else ""}
         """,
-        [
-            design.forecast_horizon_days,
-            design.min_active_days,
-        ],
-    ).fetchdf()
+        [design.min_active_days],
+    )
+
+
+def _execute_feature_query(
+    con: duckdb.DuckDBPyConnection,
+    origins: Iterable[object],
+    design: BenchmarkDesign,
+    *,
+    order_results: bool = True,
+) -> duckdb.DuckDBPyConnection:
+    """Execute the feature query and leave its result ready for fetching."""
+    query, parameters = _feature_query_statement(
+        con, origins, design, order_results=order_results
+    )
+    return con.execute(query, parameters)
+
+
+def make_feature_frame(
+    con: duckdb.DuckDBPyConnection,
+    origins: Iterable[object],
+    design: BenchmarkDesign,
+) -> pd.DataFrame:
+    """Return direct-horizon feature rows for mature series at supplied origins."""
+    return _execute_feature_query(con, origins, design).fetchdf()
 
 
 def historical_training_origins(

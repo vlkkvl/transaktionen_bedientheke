@@ -33,6 +33,7 @@ from src.models.lightgbm import (
 )
 from src.models.lightgbm.base import BaseLightGBMModel
 from src.models.lightgbm.features.builder import (
+    DISABLED_OPERATIONAL_FEATURE_COLUMNS,
     get_last_year_offset,
     iter_lightgbm_origin_windows,
     materialize_features_for_origins,
@@ -170,6 +171,12 @@ class GlobalLightGBMTest(unittest.TestCase):
         self.assertEqual(set(FEATURE_DESCRIPTIONS), set(FEATURE_COLUMNS))
         self.assertNotIn("days_since_last_positive_sale", frame.columns)
         self.assertNotIn("maturity_segment", frame.columns)
+        self.assertTrue(
+            DISABLED_OPERATIONAL_FEATURE_COLUMNS.isdisjoint(FEATURE_COLUMNS)
+        )
+        self.assertTrue(
+            DISABLED_OPERATIONAL_FEATURE_COLUMNS.isdisjoint(frame.columns)
+        )
         removed_features = {
             "recent_mean_28_forecast",
             "same_weekday_ma_4_forecast",
