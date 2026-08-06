@@ -136,8 +136,12 @@ def main() -> None:
         # # receives "data" / "interim" / "transactions_no_dups", writes "data" / "interim" / "transactions_daily_agg"
         # ("Aggregate daily transactions with product-type indicators", aggregate_daily.main),
 
-        # # receives "data" / "interim" / "transactions_daily_agg",  writes "data" / "interim" / "transactions_dst_over_days"
-        # ("Expand sales over the complete calendar", distribute_sales_over_active_days.main),
+        # receives data/interim/transactions_daily_agg and writes
+        # data/interim/transactions_dst_over_days
+        (
+            "Expand sales over the complete calendar",
+            distribute_sales_over_active_days.main,
+        ),
 
         # receives "data" / "interim" / "transactions_dst_over_days", writes "data" / "interim" / "transactions_dst_daily_no_outliers"
         (

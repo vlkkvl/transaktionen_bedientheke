@@ -6,7 +6,6 @@ import duckdb
 import pandas as pd
 
 from src.data.preparation.distribute_sales_over_active_days import (
-    SUNDAY_OPEN_MARKT_IDS,
     STATIC_COLS,
     build_calendar,
     output_select_sql,
@@ -31,7 +30,7 @@ class CompleteCalendarTest(unittest.TestCase):
             SELECT * FROM (
                 VALUES
                     (1, 1, DATE '2025-12-20', DATE '2025-12-25'),
-                    (1, {SUNDAY_OPEN_MARKT_IDS[0]},
+                    (1, 2,
                         DATE '2025-12-20', DATE '2025-12-25')
             ) AS v(ARTIKEL_ID, MARKT_ID, START_DATE, END_DATE)
             CROSS JOIN (
@@ -66,18 +65,15 @@ class CompleteCalendarTest(unittest.TestCase):
             self.assertEqual(len(series), 6)
             self.assertTrue(series["DATE"].sort_values().diff().dropna().eq("1D").all())
 
-        regular = output.loc[output["MARKT_ID"].eq(1)].set_index("DATE")
-        self.assertFalse(bool(regular.loc["2025-12-21", "is_active"]))
-        self.assertEqual(regular.loc["2025-12-21", "reason_closed"], "Sunday")
-        self.assertEqual(regular.loc["2025-12-21", "ABVERKAUFTE_MENGE_KG"], 0.0)
-        self.assertFalse(bool(regular.loc["2025-12-25", "is_active"]))
-        self.assertEqual(regular.loc["2025-12-25", "reason_closed"], "Holiday")
-
-        sunday_open = output.loc[
-            output["MARKT_ID"].eq(SUNDAY_OPEN_MARKT_IDS[0])
-        ].set_index("DATE")
-        self.assertTrue(bool(sunday_open.loc["2025-12-21", "is_active"]))
-        self.assertTrue(pd.isna(sunday_open.loc["2025-12-21", "reason_closed"]))
+        for _, series in output.groupby("MARKT_ID"):
+            by_date = series.set_index("DATE")
+            self.assertFalse(bool(by_date.loc["2025-12-21", "is_active"]))
+            self.assertEqual(by_date.loc["2025-12-21", "reason_closed"], "Sunday")
+            self.assertEqual(
+                by_date.loc["2025-12-21", "ABVERKAUFTE_MENGE_KG"], 0.0
+            )
+            self.assertFalse(bool(by_date.loc["2025-12-25", "is_active"]))
+            self.assertEqual(by_date.loc["2025-12-25", "reason_closed"], "Holiday")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ from src.models.lightgbm.base import (
 from src.models.lightgbm.features.builder import (
     CATEGORICAL_FEATURES,
     DEFAULT_FEATURES_PATH,
-    FEATURE_COLUMNS,
+    DIRECT_FEATURE_COLUMNS,
     NORMALIZED_TARGET_COLUMN,
     TARGET_SCALE_COLUMN,
     GlobalLightGBMConfig,
@@ -85,7 +85,7 @@ def _fit_origin(
             if params is None
             else params
         ),
-        feature_columns=FEATURE_COLUMNS,
+        feature_columns=DIRECT_FEATURE_COLUMNS,
         categorical_features=CATEGORICAL_FEATURES,
         config=config,
         prediction_scale_column=TARGET_SCALE_COLUMN,
@@ -104,7 +104,7 @@ def _fit_origin(
                     "best_iteration": best_iteration,
                     "objective": "regression_l2",
                     "early_stopping_metric": "rmse",
-                    "features": len(FEATURE_COLUMNS),
+                    "features": len(DIRECT_FEATURE_COLUMNS),
                 }
             ]
         ),

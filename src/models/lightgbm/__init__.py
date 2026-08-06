@@ -6,10 +6,11 @@ from src.models.lightgbm.base import (
 )
 from src.models.lightgbm.common import GlobalLightGBMResult
 from src.models.lightgbm.features.builder import (
+    DIRECT_FEATURE_COLUMNS,
     GlobalLightGBMConfig,
     GlobalLightGBMFrames,
+    anchor_date,
     create_feature_tables,
-    get_last_year_offset,
     historical_training_origins,
     iter_lightgbm_origin_windows,
     make_feature_frame,
@@ -42,6 +43,8 @@ from src.models.lightgbm.tweedie.model import (
     fit_tweedie_daily,
 )
 from src.models.lightgbm.two_stage.model import (
+    OCCURRENCE_FEATURE_COLUMNS,
+    QUANTITY_FEATURE_COLUMNS,
     TWO_STAGE_MODEL_NAME,
     fit_two_stage,
 )
@@ -57,6 +60,7 @@ __all__ = [
     "BaseLightGBMModel",
     "CATEGORICAL_FEATURES",
     "DIAGNOSTIC_COLUMNS",
+    "DIRECT_FEATURE_COLUMNS",
     "FEATURE_COLUMNS",
     "FEATURE_DESCRIPTIONS",
     "FORECAST_ID_COLUMNS",
@@ -69,6 +73,8 @@ __all__ = [
     "LightGBMVariantResult",
     "MODEL_NAME",
     "NORMALIZED_TARGET_COLUMN",
+    "OCCURRENCE_FEATURE_COLUMNS",
+    "QUANTITY_FEATURE_COLUMNS",
     "TARGET_COLUMN",
     "TARGET_SCALE_COLUMN",
     "TWEEDIE_MODEL_NAME",
@@ -76,13 +82,13 @@ __all__ = [
     "WEEKLY_CATEGORICAL_FEATURES",
     "WEEKLY_FEATURE_COLUMNS",
     "WEEKLY_MODEL_NAME",
+    "anchor_date",
     "create_feature_tables",
     "fit_all_lightgbm_models",
     "fit_global_lightgbm_frames",
     "fit_tweedie_daily",
     "fit_two_stage",
     "fit_weekly_total",
-    "get_last_year_offset",
     "historical_training_origins",
     "iter_lightgbm_origin_windows",
     "make_feature_frame",

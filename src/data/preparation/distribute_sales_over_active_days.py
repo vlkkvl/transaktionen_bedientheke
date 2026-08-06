@@ -3,7 +3,7 @@
 The input is daily sales per (ARTIKEL_ID, MARKT_ID, DATE).  For every
 article/store pair, this script creates one row for every calendar date from its
 first positive sale through the latest date in the input transaction table.
-Missing sales are filled with zero sales and zero flags. Sundays and public
+Missing sales are filled with zero sales and zero flags. All Sundays and public
 holidays are retained and marked with ``is_active`` and ``reason_closed`` so
 downstream calendar lags remain date-correct while demand analyses can exclude
 days on which a store was closed.
@@ -50,7 +50,6 @@ CALENDAR_COLS = ["is_active", "reason_closed"]
 OUTPUT_COLS = KEY_COLS + CALENDAR_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
 INPUT_COLS = KEY_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
 
-SUNDAY_OPEN_MARKT_IDS = (1100084, 1100079)
 HOLIDAY_COUNTRY = "DE"
 HOLIDAY_SUBDIVISION = "NI"  # Niedersachsen
 
@@ -150,7 +149,6 @@ def create_series_table(
 
 def output_select_sql(year: int) -> str:
     """Build the yearly SQL query that retains every calendar date."""
-    sunday_open_ids = ", ".join(str(x) for x in SUNDAY_OPEN_MARKT_IDS)
     static_cols = ",\n            ".join(f"s.{col}" for col in STATIC_COLS)
     return f"""
         SELECT
@@ -159,12 +157,11 @@ def output_select_sql(year: int) -> str:
             strftime(c.DATE_D, '%Y-%m-%d') AS DATE,
             (
                 NOT c.IS_HOLIDAY
-                AND (NOT c.IS_SUNDAY OR s.MARKT_ID IN ({sunday_open_ids}))
+                AND NOT c.IS_SUNDAY
             ) AS is_active,
             CASE
                 WHEN c.IS_HOLIDAY THEN 'Holiday'
-                WHEN c.IS_SUNDAY AND s.MARKT_ID NOT IN ({sunday_open_ids})
-                    THEN 'Sunday'
+                WHEN c.IS_SUNDAY THEN 'Sunday'
                 ELSE NULL
             END AS reason_closed,
             CASE WHEN is_active THEN COALESCE(src.UMS_MENGE, 0.0) ELSE 0.0 END

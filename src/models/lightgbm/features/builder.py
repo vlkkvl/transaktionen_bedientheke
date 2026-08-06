@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Iterable, Iterator
+import unicodedata
 
 import duckdb
 import pandas as pd
@@ -28,21 +30,228 @@ TARGET_SCALE_COLUMN = "target_mean"
 DEFAULT_FEATURES_DIR = ROOT / "data" / "processed"
 DEFAULT_FEATURES_PATH = DEFAULT_FEATURES_DIR / "lightgbm_features.parquet"
 MIN_COMPLETED_GAPS_FOR_P90 = 10
-MAX_EVENT_OFFSET_DAYS = 10
 FEATURE_ORIGIN_BATCH_SIZE = 4
-REMOVED_FEATURE_COLUMNS = frozenset({"lag_364", "lag_371"})
+EVENT_TRADING_DAY_RADIUS = 10
+EVENT_BASELINE_ROWS = 24
+EVENT_MIN_ARTICLE_BASELINE_OBSERVATIONS = 30
+# Across the 72 production origins, own-event cells contain 2-14 distinct
+# historical event dates (median 7). Two or three dates are treated as thin.
+EVENT_MIN_POOLED_CELL_DATES = 4
+FIXED_EVENT_DATES = {
+    "new_year": (1, 1, "Neujahr"),
+    "labour_day": (5, 1, "Erster Mai"),
+    "german_unity": (10, 3, "Tag der Deutschen Einheit"),
+    "reformation_day": (10, 31, "Reformationstag"),
+    "christmas_day_1": (12, 25, "Erster Weihnachtstag"),
+    "christmas_day_2": (12, 26, "Zweiter Weihnachtstag"),
+}
+REMOVED_FEATURE_COLUMNS = frozenset(
+    {
+        "lag_364",
+        "lag_371",
+    }
+)
 
 
-def get_last_year_offset(current_date: object) -> int:
-    """Return the Easter-aligned annual-history offset for a target date."""
-    target = pd.Timestamp(current_date).normalize()
+def _mothers_day(year: int) -> pd.Timestamp:
+    """Return the second Sunday in May."""
+    may_first = pd.Timestamp(year=year, month=5, day=1)
+    days_to_sunday = (6 - may_first.dayofweek) % 7
+    return may_first + pd.Timedelta(days=days_to_sunday + 7)
+
+
+def _normalize_event_name(event_name: str) -> str:
+    """Return a stable identifier for a calendar event name."""
+    ascii_name = unicodedata.normalize("NFKD", event_name).encode(
+        "ascii", "ignore"
+    ).decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "_", ascii_name.lower()).strip("_")
+
+
+def _annual_events(years: Iterable[int]) -> list[dict[str, Any]]:
+    """Return the non-Easter events that receive trading-day anchors."""
+    rows: list[dict[str, Any]] = []
+    for year in sorted(set(int(value) for value in years)):
+        for event_key, (month, day, event_name) in FIXED_EVENT_DATES.items():
+            rows.append(
+                {
+                    "event_key": event_key,
+                    "event_name": event_name,
+                    "event_date": pd.Timestamp(year=year, month=month, day=day),
+                }
+            )
+        rows.append(
+            {
+                "event_key": "mothers_day",
+                "event_name": "Muttertag",
+                "event_date": _mothers_day(year),
+            }
+        )
+    return rows
+
+
+def _public_holiday_dates(years: Iterable[int]) -> set[pd.Timestamp]:
+    holiday_map = create_germany_ni_holidays(range(min(years), max(years) + 1))
+    return {pd.Timestamp(day) for day in holiday_map}
+
+
+def _is_trading_day(day: pd.Timestamp, holidays: set[pd.Timestamp]) -> bool:
+    normalized = day.normalize()
+    return normalized.dayofweek != 6 and normalized not in holidays
+
+
+def _trading_day_offset(
+    target: pd.Timestamp,
+    event_date: pd.Timestamp,
+    holidays: set[pd.Timestamp],
+) -> int:
+    """Return the signed active-day position of target around an event."""
+    target = target.normalize()
+    event_date = event_date.normalize()
+    if target == event_date:
+        return 0
+    if target < event_date:
+        dates = pd.date_range(target, event_date - pd.Timedelta(days=1), freq="D")
+        return -sum(_is_trading_day(day, holidays) for day in dates)
+    dates = pd.date_range(event_date + pd.Timedelta(days=1), target, freq="D")
+    return sum(_is_trading_day(day, holidays) for day in dates)
+
+
+def _shift_trading_days(
+    event_date: pd.Timestamp,
+    offset: int,
+    holidays: set[pd.Timestamp],
+) -> pd.Timestamp:
+    """Map a signed trading-day offset onto an event occurrence."""
+    if offset == 0:
+        return event_date.normalize()
+    direction = 1 if offset > 0 else -1
+    remaining = abs(int(offset))
+    current = event_date.normalize()
+    while remaining:
+        current += pd.Timedelta(days=direction)
+        if _is_trading_day(current, holidays):
+            remaining -= 1
+    return current
+
+
+def _closure_block_length(
+    event_date: pd.Timestamp,
+    holidays: set[pd.Timestamp],
+) -> int:
+    """Count consecutive closed dates in the block containing an event."""
+    event_date = event_date.normalize()
+
+    def closed(day: pd.Timestamp) -> bool:
+        return not _is_trading_day(day, holidays)
+
+    if not closed(event_date):
+        return 0
+    start = event_date
+    while closed(start - pd.Timedelta(days=1)):
+        start -= pd.Timedelta(days=1)
+    end = event_date
+    while closed(end + pd.Timedelta(days=1)):
+        end += pd.Timedelta(days=1)
+    return int((end - start).days + 1)
+
+
+def _nearest_non_easter_event(
+    target: pd.Timestamp,
+    events: list[dict[str, Any]],
+    holidays: set[pd.Timestamp],
+) -> tuple[dict[str, Any], int] | None:
+    """Return rule-(a) context only when a non-Easter event is nearest overall."""
+    non_easter_by_date = {
+        event["event_date"].normalize(): event for event in events
+    }
+    all_event_dates = set(non_easter_by_date) | {
+        day.normalize() for day in holidays
+    }
+    candidates = []
+    for event_date in all_event_dates:
+        calendar_distance = abs((event_date - target).days)
+        if calendar_distance > 24:
+            continue
+        offset = _trading_day_offset(target, event_date, holidays)
+        candidates.append(
+            (
+                abs(offset),
+                calendar_distance,
+                event_date,
+                non_easter_by_date.get(event_date),
+                offset,
+            )
+        )
+    if not candidates:
+        return None
+    _, _, _, event, offset = min(candidates, key=lambda value: value[:3])
+    if event is None or abs(offset) > EVENT_TRADING_DAY_RADIUS:
+        return None
+    return event, int(offset)
+
+
+def _resolve_annual_anchor(
+    target: pd.Timestamp,
+    events: list[dict[str, Any]],
+    holidays: set[pd.Timestamp],
+) -> dict[str, Any]:
+    """Resolve one anchor and its event context through the shared rule path."""
+    target = target.normalize()
+    event_match = _nearest_non_easter_event(target, events, holidays)
+    if event_match is not None:
+        event, trading_offset = event_match
+        previous_event = next(
+            candidate
+            for candidate in events
+            if candidate["event_key"] == event["event_key"]
+            and candidate["event_date"].year == event["event_date"].year - 1
+        )
+        return {
+            "anchor_period": _shift_trading_days(
+                previous_event["event_date"], trading_offset, holidays
+            ),
+            "anchor_kind": "event",
+            "anchor_event_key": event["event_key"],
+            "anchor_event_name": event["event_name"],
+            "event_trading_day_offset": trading_offset,
+            "event_closure_block_length": _closure_block_length(
+                event["event_date"], holidays
+            ),
+        }
+
     easter_current = pd.Timestamp(easter(target.year))
     easter_previous = pd.Timestamp(easter(target.year - 1))
-    easter_window_start = easter_current - pd.Timedelta(days=21)
-    easter_window_end = easter_current + pd.Timedelta(days=64)
-    if easter_window_start <= target <= easter_window_end:
-        return int((easter_current - easter_previous).days)
-    return 364
+    if (
+        easter_current - pd.Timedelta(days=21)
+        <= target
+        <= easter_current + pd.Timedelta(days=64)
+    ):
+        anchor = target - (easter_current - easter_previous)
+        anchor_kind = "easter"
+    else:
+        anchor = target - pd.Timedelta(days=364)
+        anchor_kind = "regular"
+    return {
+        "anchor_period": anchor,
+        "anchor_kind": anchor_kind,
+        "anchor_event_key": None,
+        "anchor_event_name": None,
+        "event_trading_day_offset": None,
+        "event_closure_block_length": None,
+    }
+
+
+def anchor_date(current_date: object) -> pd.Timestamp:
+    """Resolve the prior-year annual anchor for a target date."""
+    target = pd.Timestamp(current_date).normalize()
+    years = range(target.year - 1, target.year + 2)
+    context = _resolve_annual_anchor(
+        target,
+        _annual_events(years),
+        _public_holiday_dates(years),
+    )
+    return context["anchor_period"]
 
 
 def _normalize_feature_path(path: Path | str) -> Path:
@@ -143,27 +352,29 @@ FEATURE_COLUMNS = (
     # Maturity and demand gaps
     "active_days_before_origin",
     "demand_days_before_origin",
-    "demand_day_ratio",
     "active_zero_demand_gap",
-    "demand_days_last_7",
-    "demand_days_last_28",
-    "demand_days_last_60",
+    "demand_rate_last_6",
+    "demand_rate_last_12",
+    "demand_rate_last_24",
     "historical_p90_gap",
     "current_gap_over_historical_p90_gap",
     # Local demand history
     "same_weekday_lag_7",
     "same_weekday_lag_14",
-    "rolling_7_mean",
-    "rolling_28_mean",
+    "rolling_6_mean",
+    "rolling_24_mean",
     "rolling_28_demand_rate",
     "same_weekday_mean_4",
     "same_weekday_mean_8",
     # Annual demand history
-    "has_annual_history",
+    "annual_lookup_days_available",
     "same_weekday_last_year_mean",
     "same_week_last_year_mean",
     "product_cross_store_same_weekday_last_year_mean",
-    "same_event_offset_last_year_mean",
+    "event_lift_series",
+    "event_lift_pooled_occurrence",
+    "event_lift_pooled_quantity",
+    "event_lift_pooled_total",
     # Demand regime
     "ADI",
     "CV2",
@@ -171,6 +382,16 @@ FEATURE_COLUMNS = (
     "product_cross_store_mean_28",
     "product_weekday_profile_value",
     "store_category_mean_28",
+)
+
+DIRECT_FEATURE_COLUMNS = tuple(
+    feature
+    for feature in FEATURE_COLUMNS
+    if feature
+    not in {
+        "event_lift_pooled_occurrence",
+        "event_lift_pooled_quantity",
+    }
 )
 
 FEATURE_DESCRIPTIONS = {
@@ -231,18 +452,18 @@ FEATURE_DESCRIPTIONS = {
     ),
     "days_to_nearest_event": (
         "Signed number of calendar days from the target date to the nearest "
-        "Niedersachsen public holiday: holiday date minus target date. Positive values "
-        "indicate dates before the holiday and negative values dates after it; ties "
-        "are resolved in favor of the earlier holiday."
+        "Niedersachsen public holiday or Muttertag event: event date minus target "
+        "date. Positive values indicate dates before the event and negative values "
+        "dates after it; ties are resolved in favor of the earlier event."
     ),
     "holiday_event_window": (
-        "Categorical position of the target date relative to its nearest Niedersachsen "
-        "public holiday: holiday, 1-3 calendar days before, 1-3 calendar days after, "
-        "or none when the absolute offset exceeds three days."
+        "Categorical position relative to the nearest Niedersachsen public holiday or "
+        "Muttertag: event date, 1-3 calendar days before, 1-3 calendar days after, or "
+        "none when the absolute offset exceeds three days."
     ),
     "event_name": (
-        "Name of the nearest Niedersachsen public holiday when its absolute calendar-"
-        "day offset from the target is at most three; otherwise the category none."
+        "Name of the nearest Niedersachsen public holiday or Muttertag when its "
+        "absolute calendar-day offset is at most three; otherwise the category none."
     ),
     "action_on_forecast_day": (
         "Article-store promotion indicator recorded for the forecast target date; no "
@@ -281,31 +502,26 @@ FEATURE_DESCRIPTIONS = {
         "strictly before the origin; inactive, active zero-demand, and missing dates "
         "do not contribute."
     ),
-    "demand_day_ratio": (
-        "demand_days_before_origin / active_days_before_origin. The denominator contains "
-        "only active observed rows, including active zero-demand rows; the ratio is "
-        "missing when no active history exists."
-    ),
     "active_zero_demand_gap": (
         "Number of active observed rows after the most recent active positive-demand "
         "row and strictly before the origin. Inactive and missing calendar dates do "
         "not increase the gap; before the first positive-demand row, all active "
         "observations are counted."
     ),
-    "demand_days_last_7": (
-        "Count of active positive-demand observations in the seven-calendar-day window "
-        "ending on the last observed row before the origin. Inactive, zero-demand, and "
-        "missing dates do not contribute."
+    "demand_rate_last_6": (
+        "Share of positive-demand observations among the final six active article-store "
+        "rows strictly before the origin. Inactive and missing calendar dates are "
+        "excluded before the active-row window is formed."
     ),
-    "demand_days_last_28": (
-        "Count of active positive-demand observations in the 28-calendar-day window "
-        "ending on the last observed row before the origin. Inactive, zero-demand, and "
-        "missing dates do not contribute."
+    "demand_rate_last_12": (
+        "Share of positive-demand observations among the final 12 active article-store "
+        "rows strictly before the origin. Inactive and missing calendar dates are "
+        "excluded before the active-row window is formed."
     ),
-    "demand_days_last_60": (
-        "Count of active positive-demand observations in the 60-calendar-day window "
-        "ending on the last observed row before the origin. Inactive, zero-demand, and "
-        "missing dates do not contribute."
+    "demand_rate_last_24": (
+        "Share of positive-demand observations among the final 24 active article-store "
+        "rows strictly before the origin. Inactive and missing calendar dates are "
+        "excluded before the active-row window is formed."
     ),
     "historical_p90_gap": (
         "Reference length for completed gaps between consecutive active positive-demand "
@@ -320,28 +536,24 @@ FEATURE_DESCRIPTIONS = {
         "current gap is zero and missing when a positive gap has no nonzero reference."
     ),
     "same_weekday_lag_7": (
-        "Article-store demand on the exact calendar date target - 7 days. No activity "
-        "filter is applied, so an observed inactive date contributes its recorded zero; "
-        "a missing date produces a missing feature."
+        "Article-store demand on the exact calendar date target - 7 days. An active "
+        "lookup date contributes its recorded demand; an inactive or missing lookup "
+        "date produces a missing feature."
     ),
     "same_weekday_lag_14": (
-        "Article-store demand on the exact calendar date target - 14 days. No activity "
-        "filter is applied, so an observed inactive date contributes its recorded zero; "
-        "a missing date produces a missing feature."
+        "Article-store demand on the exact calendar date target - 14 days. An active "
+        "lookup date contributes its recorded demand; an inactive or missing lookup "
+        "date produces a missing feature."
     ),
-    "rolling_7_mean": (
-        "Arithmetic mean of demand over the final seven observed article-store rows "
-        "strictly before the origin. The denominator is the number of non-null demand "
-        "values, without an activity filter: inactive rows recorded with zero are "
-        "included, while missing calendar dates are absent and can make the row window "
-        "extend more than seven calendar days."
+    "rolling_6_mean": (
+        "Arithmetic mean of demand over the final six active article-store rows "
+        "strictly before the origin. Inactive and missing dates are removed before "
+        "forming the window, so the denominator is six when sufficient history exists."
     ),
-    "rolling_28_mean": (
-        "Arithmetic mean of demand over the final 28 observed article-store rows "
-        "strictly before the origin. The denominator is the number of non-null demand "
-        "values, without an activity filter: inactive rows recorded with zero are "
-        "included, while missing calendar dates are absent and can make the row window "
-        "extend more than 28 calendar days."
+    "rolling_24_mean": (
+        "Arithmetic mean of demand over the final 24 active article-store rows "
+        "strictly before the origin. Inactive and missing dates are removed before "
+        "forming the window, so the denominator is 24 when sufficient history exists."
     ),
     "rolling_28_demand_rate": (
         "Share of active observations with demand > 0 within the final 28 observed "
@@ -351,58 +563,77 @@ FEATURE_DESCRIPTIONS = {
     ),
     "same_weekday_mean_4": (
         "Arithmetic mean over up to the final four active article-store observations "
-        "strictly before the origin whose ISO weekday matches the target weekday. The "
-        "denominator is the available active observations, including zero-demand rows; "
-        "inactive and missing dates are excluded."
+        "strictly before the origin whose ISO weekday matches the target weekday and "
+        "whose holiday-event window is none. Event-window, inactive, and missing dates "
+        "are removed before the four-row window is formed."
     ),
     "same_weekday_mean_8": (
         "Arithmetic mean over up to the final eight active article-store observations "
-        "strictly before the origin whose ISO weekday matches the target weekday. The "
-        "denominator is the available active observations, including zero-demand rows; "
-        "inactive and missing dates are excluded."
+        "strictly before the origin whose ISO weekday matches the target weekday and "
+        "whose holiday-event window is none. Event-window, inactive, and missing dates "
+        "are removed before the eight-row window is formed."
     ),
-    "has_annual_history": (
-        "Indicator that an article-store row exists on the exact calendar date target "
-        "- A. Activity is not required, so an inactive row counts as history; a missing "
-        "row does not. A is the day difference between current and previous Easter for "
-        "targets from 21 days before through 64 days after Easter, and 364 otherwise."
+    "annual_lookup_days_available": (
+        "Number of observed active article-store lookup dates used by the annual "
+        "same-weekday mean. The usual five-date anchor-and-spoke lookup yields 0-5. "
+        "For Easter-aligned and regular anchors, a date is usable only when its "
+        "holiday-event window and event name match the target's context. "
+        "When the nearest event overall is a configured non-Easter event within ten "
+        "trading days, only its mapped anchor is eligible, so the value is 0 or 1 on "
+        "the same 0-5 scale."
     ),
     "same_weekday_last_year_mean": (
-        "Arithmetic mean of article-store demand on the five exact calendar dates "
-        "target - (A - 14), target - (A - 7), target - A, target - (A + 7), and "
-        "target - (A + 14). A is the Easter-aware annual offset. The feature is only "
-        "constructed when the target - A row exists, regardless of that row's activity. "
-        "The averaging denominator contains only available active lookup rows among the "
-        "five dates, including active zero-demand rows. Inactive and missing lookup "
-        "dates are excluded; the result is missing when none of the five is active."
+        "Mean article-store demand over active observed dates at the resolved annual "
+        "anchor and its +/-7 and +/-14-day spokes. For Easter-aligned and regular "
+        "anchors, candidates must match the target's holiday-event window and event "
+        "name. When the nearest event overall is a configured non-Easter event within "
+        "ten trading days, the feature is its mapped anchor date alone, with no "
+        "spokes or weekday snapping."
     ),
     "same_week_last_year_mean": (
         "Arithmetic mean of article-store demand over active observed rows in the "
-        "reference Monday-Sunday calendar week whose Monday is target-week Monday - A "
-        "days. A is the Easter-aware annual offset. The denominator is the number of "
-        "available active daily rows, including active zero-demand rows; inactive and "
-        "missing dates are excluded. The result is missing when the reference week has "
-        "no active row."
+        "Monday-Sunday week resolved from the shared annual anchor. Inactive and "
+        "missing dates are excluded. The feature is missing for targets using a "
+        "non-Easter event anchor."
     ),
     "product_cross_store_same_weekday_last_year_mean": (
-        "For each of the five exact dates target - (A - 14), target - (A - 7), target "
-        "- A, target - (A + 7), and target - (A + 14), article demand is first averaged "
-        "across active stores. Each daily denominator therefore contains active store "
-        "rows, including active zero-demand rows, while inactive stores are excluded. "
-        "The feature is the arithmetic mean of the available non-null daily means; "
-        "dates with no active store or no article row are excluded. The feature is "
-        "only constructed when an article row exists at some store on target - A; "
-        "that central row need not be active."
+        "Article demand averaged across active stores on the shared annual anchor and "
+        "eligible +/-7 and +/-14-day spokes, then averaged across dates. For regular "
+        "and Easter-aligned anchors, candidates must match the target's holiday-event "
+        "window and event name. When the nearest event overall is a configured "
+        "non-Easter event within ten trading days, only its mapped anchor date is "
+        "used."
     ),
-    "same_event_offset_last_year_mean": (
-        "When the target is at most ten calendar days from its nearest Niedersachsen "
-        "holiday, the signed target-to-holiday offset is mapped to the same holiday in "
-        "the preceding year. The feature is the arithmetic mean of article-store demand "
-        "over active observed rows in the seven-calendar-day interval centered on that "
-        "mapped date. The denominator contains only available active rows, including "
-        "active zero-demand rows; inactive and missing dates are excluded. The result "
-        "is missing when the target's absolute holiday offset exceeds ten days, no row "
-        "exists on the mapped center date, or the centered interval has no active row."
+    "event_lift_series": (
+        "Demand on the mapped prior-year event anchor divided by the article-store "
+        "mean over the 24 active rows ending immediately before that anchor. It is "
+        "available only for an active mapped anchor when the target is inside a "
+        "calendar holiday-event window."
+    ),
+    "event_lift_pooled_occurrence": (
+        "Ratio of summed positive-demand indicators to summed non-event occurrence "
+        "baselines for the same event and closure-block length. Baselines are keyed "
+        "by each historical observation's weekday and article, with a weekday, "
+        "sourcing-group, and category fallback for article cells below 30 "
+        "observations. Weekday is not part of the pooled event key. Event cells below "
+        "four distinct historical event dates yield missing values; estimates never "
+        "borrow observations from another event. Only observations strictly before "
+        "the forecast origin enter the estimate."
+    ),
+    "event_lift_pooled_quantity": (
+        "Ratio of summed positive event demand to summed non-event positive-demand "
+        "baselines for the same event and closure-block length. Baselines are keyed "
+        "by each historical observation's weekday and article, with a weekday, "
+        "sourcing-group, and category fallback for article cells below 30 "
+        "observations. Zero-demand observations are excluded from both sums. Event "
+        "cells below four distinct historical event dates yield missing values; "
+        "estimates never borrow observations from another event. Only observations "
+        "strictly before the forecast origin enter the estimate."
+    ),
+    "event_lift_pooled_total": (
+        "Total pooled demand lift for direct models, defined exactly as "
+        "event_lift_pooled_occurrence multiplied by event_lift_pooled_quantity. Only "
+        "observations strictly before the forecast origin enter either component."
     ),
     "ADI": (
         "Count of active article-store observations divided by the count of active "
@@ -426,14 +657,13 @@ FEATURE_DESCRIPTIONS = {
         "absent and can make the row window span more than 28 calendar days."
     ),
     "product_weekday_profile_value": (
-        "Total article demand across stores on up to the final eight observed dates "
-        "strictly before the origin that match the target weekday and have at least one "
-        "active store, divided by total article demand across the final 56 observed "
-        "article-date rows before the origin. The numerator's date eligibility uses "
-        "activity, but each eligible date's demand sum includes every observed store "
-        "row; inactive rows contribute their recorded zero. Missing dates are absent "
-        "from both row windows. The value defaults to 1/7 when the denominator is not "
-        "positive."
+        "Weekday demand multiplier centred on 1.0. For each eligible article-date, "
+        "demand is first averaged across active stores. The numerator is the mean over "
+        "the final eight eligible open dates matching the target weekday; the "
+        "denominator is the mean over the final 48 eligible open dates. Dates in a "
+        "holiday-event window, fully closed dates, inactive stores, and missing dates "
+        "are excluded. The value is missing when either mean is unavailable or the "
+        "denominator is zero."
     ),
     "store_category_mean_28": (
         "For each store-category-date, demand is first averaged across active article "
@@ -645,33 +875,25 @@ class GlobalLightGBMFrames:
 
 
 def _holiday_calendar(start: object, end: object) -> pd.DataFrame:
-    """Build Niedersachsen holiday/event-window features for target dates."""
+    """Build Niedersachsen holiday and retail-event calendar features."""
     start_date = pd.Timestamp(start).normalize()
     end_date = pd.Timestamp(end).normalize()
     dates = pd.date_range(start_date, end_date, freq="D")
     holiday_map = create_germany_ni_holidays(
         range(start_date.year - 1, end_date.year + 2)
     )
+    public_holiday_dates = {pd.Timestamp(day) for day in holiday_map}
     events = [(pd.Timestamp(day), str(name)) for day, name in holiday_map.items()]
-    events_by_year_and_name = {
-        (event_date.year, event_name): event_date
-        for event_date, event_name in events
-    }
-
+    events.extend(
+        (_mothers_day(year), "Muttertag")
+        for year in range(start_date.year - 1, end_date.year + 2)
+    )
     rows: list[dict[str, Any]] = []
     for target in dates:
         nearest_date, nearest_name = min(
             events, key=lambda event: (abs((event[0] - target).days), event[0])
         )
         delta = int((nearest_date - target).days)
-        previous_event_date = events_by_year_and_name.get(
-            (nearest_date.year - 1, nearest_name)
-        )
-        previous_event_offset_date = (
-            previous_event_date - pd.Timedelta(days=delta)
-            if previous_event_date is not None
-            else pd.NaT
-        )
         if delta == 0:
             window = "holiday"
         elif 0 < delta <= 3:
@@ -683,13 +905,19 @@ def _holiday_calendar(start: object, end: object) -> pd.DataFrame:
         rows.append(
             {
                 "period": target.date(),
-                "is_public_holiday": delta == 0,
+                "is_public_holiday": target in public_holiday_dates,
                 "days_to_nearest_event": delta,
                 "holiday_event_window": window,
                 "event_name": nearest_name if abs(delta) <= 3 else "none",
-                "previous_event_offset_date": (
-                    previous_event_offset_date.date()
-                    if pd.notna(previous_event_offset_date)
+                "calendar_event_key": (
+                    _normalize_event_name(nearest_name) if window != "none" else None
+                ),
+                "calendar_event_date": (
+                    nearest_date.date() if window != "none" else None
+                ),
+                "calendar_event_closure_block_length": (
+                    _closure_block_length(nearest_date, public_holiday_dates)
+                    if window != "none"
                     else None
                 ),
             }
@@ -697,19 +925,29 @@ def _holiday_calendar(start: object, end: object) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _annual_offset_calendar(start: object, end: object) -> pd.DataFrame:
-    """Build the annual-history offset for every possible target date."""
+def _annual_anchor_calendar(start: object, end: object) -> pd.DataFrame:
+    """Build the shared annual anchor and event context for every date."""
     dates = pd.date_range(
         pd.Timestamp(start).normalize(),
         pd.Timestamp(end).normalize(),
         freq="D",
     )
-    return pd.DataFrame(
-        {
-            "target_period": dates.date,
-            "last_year_offset": [get_last_year_offset(day) for day in dates],
-        }
-    )
+    years = range(dates.min().year - 1, dates.max().year + 2)
+    holidays = _public_holiday_dates(years)
+    events = _annual_events(years)
+    rows: list[dict[str, Any]] = []
+    for target in dates:
+        context = _resolve_annual_anchor(target, events, holidays)
+        rows.append(
+            {
+                "target_period": target.date(),
+                **{
+                    key: value.date() if key == "anchor_period" else value
+                    for key, value in context.items()
+                },
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def create_feature_tables(
@@ -822,96 +1060,107 @@ def create_feature_tables(
         """
     )
     con.register(
-        "ml_annual_offset_frame",
-        _annual_offset_calendar(bounds[0], bounds[1]),
+        "ml_annual_anchor_frame",
+        _annual_anchor_calendar(bounds[0], bounds[1]),
     )
     con.execute(
-        "CREATE OR REPLACE TABLE ml_annual_offsets AS "
-        "SELECT * FROM ml_annual_offset_frame"
+        "CREATE OR REPLACE TABLE ml_annual_anchors AS "
+        "SELECT * FROM ml_annual_anchor_frame"
     )
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE ml_annual_reference_dates AS
         SELECT
-            offsets.target_period,
-            offsets.last_year_offset,
-            annual_offsets.annual_offset,
-            (
-                offsets.target_period
-                - annual_offsets.annual_offset * INTERVAL 1 DAY
-            )::DATE AS reference_period
-        FROM ml_annual_offsets AS offsets
-        CROSS JOIN (
-            VALUES
-                (offsets.last_year_offset - 14),
-                (offsets.last_year_offset - 7),
-                (offsets.last_year_offset),
-                (offsets.last_year_offset + 7),
-                (offsets.last_year_offset + 14)
-        ) AS annual_offsets(annual_offset)
+            anchors.target_period,
+            anchors.anchor_kind,
+            (anchors.anchor_period + spokes.day_offset * INTERVAL 1 DAY)::DATE
+                AS reference_period
+        FROM ml_annual_anchors AS anchors
+        CROSS JOIN (VALUES (-14), (-7), (0), (7), (14)) AS spokes(day_offset)
+        WHERE anchors.anchor_kind <> 'event' OR spokes.day_offset = 0
         """
     )
     con.execute(
         """
         CREATE OR REPLACE TABLE ml_series_annual_features AS
-        WITH annual_references AS (
-            SELECT
-                history.ARTIKEL_ID,
-                history.MARKT_ID,
-                offsets.target_period
-            FROM ml_annual_offsets AS offsets
-            INNER JOIN ml_target_dates USING (target_period)
-            INNER JOIN benchmark_daily_rows AS history
-                ON history.period = offsets.target_period
-                    - offsets.last_year_offset * INTERVAL 1 DAY
-        )
         SELECT
-            reference.ARTIKEL_ID,
-            reference.MARKT_ID,
-            reference.target_period,
-            AVG(history.demand) FILTER (WHERE history.is_active)
-                AS same_weekday_last_year_mean
-        FROM annual_references AS reference
-        INNER JOIN ml_annual_reference_dates AS candidate
-            ON reference.target_period = candidate.target_period
-        LEFT JOIN benchmark_daily_rows AS history
-            ON reference.ARTIKEL_ID = history.ARTIKEL_ID
-            AND reference.MARKT_ID = history.MARKT_ID
-            AND history.period = candidate.reference_period
+            history.ARTIKEL_ID,
+            history.MARKT_ID,
+            candidate.target_period,
+            COUNT(*) FILTER (
+                WHERE history.is_active
+                    AND (
+                        candidate.anchor_kind = 'event'
+                        OR (
+                            reference_calendar.holiday_event_window
+                                = target_calendar.holiday_event_window
+                            AND reference_calendar.event_name
+                                = target_calendar.event_name
+                        )
+                    )
+            )::INTEGER AS annual_lookup_days_available,
+            AVG(history.demand) FILTER (
+                WHERE history.is_active
+                    AND (
+                        candidate.anchor_kind = 'event'
+                        OR (
+                            reference_calendar.holiday_event_window
+                                = target_calendar.holiday_event_window
+                            AND reference_calendar.event_name
+                                = target_calendar.event_name
+                        )
+                    )
+            ) AS same_weekday_last_year_mean
+        FROM ml_annual_reference_dates AS candidate
+        INNER JOIN ml_target_dates USING (target_period)
+        INNER JOIN benchmark_daily_rows AS history
+            ON history.period = candidate.reference_period
+        INNER JOIN ml_calendar AS target_calendar
+            ON candidate.target_period = target_calendar.period
+        INNER JOIN ml_calendar AS reference_calendar
+            ON candidate.reference_period = reference_calendar.period
         GROUP BY
-            reference.ARTIKEL_ID,
-            reference.MARKT_ID,
-            reference.target_period
+            history.ARTIKEL_ID,
+            history.MARKT_ID,
+            candidate.target_period
         """
     )
     con.execute(
         """
         CREATE OR REPLACE TABLE ml_series_weekly_annual_features AS
         WITH requested_reference_weeks AS (
-            SELECT DISTINCT
+            SELECT
+                anchors.target_period,
                 (
-                    DATE_TRUNC('week', offsets.target_period)
-                    - offsets.last_year_offset * INTERVAL 1 DAY
+                    anchors.anchor_period
+                    - DATE_DIFF(
+                        'day',
+                        DATE_TRUNC('week', anchors.target_period),
+                        anchors.target_period
+                    ) * INTERVAL 1 DAY
                 )::DATE AS reference_week_start
-            FROM ml_annual_offsets AS offsets
+            FROM ml_annual_anchors AS anchors
             INNER JOIN ml_target_dates USING (target_period)
+            WHERE anchors.anchor_kind <> 'event'
         )
         SELECT
-            ARTIKEL_ID,
-            MARKT_ID,
-            DATE_TRUNC('week', period)::DATE AS reference_week_start,
-            AVG(demand) FILTER (WHERE is_active) AS same_week_last_year_mean
-        FROM benchmark_daily_rows
-        WHERE DATE_TRUNC('week', period)::DATE
-            IN (SELECT reference_week_start FROM requested_reference_weeks)
-        GROUP BY ARTIKEL_ID, MARKT_ID, DATE_TRUNC('week', period)
+            history.ARTIKEL_ID,
+            history.MARKT_ID,
+            requested.target_period,
+            AVG(history.demand) FILTER (WHERE history.is_active)
+                AS same_week_last_year_mean
+        FROM requested_reference_weeks AS requested
+        INNER JOIN benchmark_daily_rows AS history
+            ON history.period BETWEEN requested.reference_week_start
+                AND requested.reference_week_start + INTERVAL 6 DAY
+        GROUP BY history.ARTIKEL_ID, history.MARKT_ID, requested.target_period
         """
     )
     con.execute(
         """
         CREATE OR REPLACE TABLE ml_series_lag_features AS
         -- Single-date RANGE frames return the exact period - 7/14 row when it
-        -- exists and NULL otherwise, matching a LEFT JOIN on the exact date.
+        -- exists and is active, and NULL for inactive or missing lookup dates.
         -- The window runs over the full history; only rows on requested
         -- target dates are stored because only those are ever joined.
         SELECT * FROM (
@@ -919,8 +1168,10 @@ def create_feature_tables(
                 ARTIKEL_ID,
                 MARKT_ID,
                 period,
-                MAX(demand) OVER lag_7 AS same_weekday_lag_7,
-                MAX(demand) OVER lag_14 AS same_weekday_lag_14
+                MAX(demand) FILTER (WHERE is_active) OVER lag_7
+                    AS same_weekday_lag_7,
+                MAX(demand) FILTER (WHERE is_active) OVER lag_14
+                    AS same_weekday_lag_14
             FROM benchmark_daily_rows
             WINDOW
                 lag_7 AS (
@@ -941,35 +1192,183 @@ def create_feature_tables(
     )
     con.execute(
         f"""
-        CREATE OR REPLACE TABLE ml_series_centered_7_features AS
-        -- The centered mean is computed over the full history; only reference
-        -- dates reachable from requested target dates are stored because the
-        -- event-offset join can only probe those.
-        SELECT * FROM (
-            SELECT
-                ARTIKEL_ID,
-                MARKT_ID,
-                period AS reference_period,
-                AVG(demand) FILTER (WHERE is_active) OVER (
-                    PARTITION BY ARTIKEL_ID, MARKT_ID
-                    ORDER BY period
-                    RANGE BETWEEN INTERVAL 3 DAY PRECEDING
-                        AND INTERVAL 3 DAY FOLLOWING
-                ) AS centered_7_demand_mean
-            FROM benchmark_daily_rows
+        CREATE OR REPLACE TEMP TABLE ml_active_series_event_history AS
+        SELECT
+            ARTIKEL_ID,
+            MARKT_ID,
+            sourcing_group,
+            category_id,
+            period AS feature_date,
+            demand,
+            COUNT(*) OVER previous_24 AS previous_active_days,
+            AVG(demand) OVER previous_24 AS previous_demand_mean
+        FROM benchmark_daily_rows
+        WHERE is_active
+        WINDOW previous_24 AS (
+            PARTITION BY ARTIKEL_ID, MARKT_ID
+            ORDER BY period ROWS BETWEEN {EVENT_BASELINE_ROWS} PRECEDING
+                AND 1 PRECEDING
         )
-        WHERE reference_period IN (
-            SELECT event_calendar.previous_event_offset_date
-            FROM ml_calendar AS event_calendar
-            INNER JOIN ml_target_dates
-                ON event_calendar.period = ml_target_dates.target_period
-            WHERE event_calendar.previous_event_offset_date IS NOT NULL
-                AND ABS(event_calendar.days_to_nearest_event)
-                    <= {MAX_EVENT_OFFSET_DAYS}
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE ml_series_event_lifts AS
+        SELECT
+            history.ARTIKEL_ID,
+            history.MARKT_ID,
+            anchors.target_period,
+            history.demand / NULLIF(history.previous_demand_mean, 0)
+                AS event_lift_series
+        FROM ml_annual_anchors AS anchors
+        INNER JOIN ml_target_dates USING (target_period)
+        INNER JOIN ml_calendar AS calendar
+            ON anchors.target_period = calendar.period
+        INNER JOIN ml_active_series_event_history AS history
+            ON anchors.anchor_period = history.feature_date
+        WHERE calendar.holiday_event_window <> 'none'
+            AND history.previous_active_days = {EVENT_BASELINE_ROWS}
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE ml_pooled_event_statistics AS
+        WITH daily AS (
+            SELECT
+                history.feature_date,
+                calendar.calendar_event_key,
+                calendar.calendar_event_closure_block_length,
+                EXTRACT(ISODOW FROM history.feature_date)::INTEGER AS event_weekday,
+                history.ARTIKEL_ID,
+                history.sourcing_group,
+                history.category_id,
+                COUNT(*) AS event_observation_count,
+                COUNT_IF(history.demand > 0) AS event_positive_observation_count,
+                SUM(history.demand) FILTER (WHERE history.demand > 0)
+                    AS event_positive_demand_sum
+            FROM ml_active_series_event_history AS history
+            INNER JOIN ml_calendar AS calendar
+                ON history.feature_date = calendar.period
+            WHERE calendar.holiday_event_window <> 'none'
+                AND history.previous_active_days = {EVENT_BASELINE_ROWS}
+            GROUP BY
+                feature_date,
+                calendar_event_key,
+                calendar_event_closure_block_length,
+                event_weekday,
+                history.ARTIKEL_ID,
+                history.sourcing_group,
+                history.category_id
+        )
+        SELECT * FROM daily
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE ml_pooled_article_baseline_statistics AS
+        WITH daily AS (
+            SELECT
+                history.feature_date,
+                EXTRACT(ISODOW FROM history.feature_date)::INTEGER
+                    AS baseline_weekday,
+                history.ARTIKEL_ID,
+                COUNT(*) AS observation_count,
+                COUNT_IF(history.demand > 0) AS positive_observation_count,
+                SUM(history.demand) FILTER (WHERE history.demand > 0)
+                    AS positive_demand_sum
+            FROM ml_active_series_event_history AS history
+            INNER JOIN ml_calendar AS calendar
+                ON history.feature_date = calendar.period
+            WHERE calendar.holiday_event_window = 'none'
+                AND history.previous_active_days = {EVENT_BASELINE_ROWS}
+            GROUP BY feature_date, baseline_weekday, history.ARTIKEL_ID
+        )
+        SELECT
+            feature_date,
+            baseline_weekday,
+            ARTIKEL_ID,
+            SUM(observation_count) OVER history AS baseline_observation_count,
+            SUM(positive_observation_count) OVER history
+                AS baseline_positive_observation_count,
+            SUM(positive_demand_sum) OVER history AS baseline_positive_demand_sum
+        FROM daily
+        WINDOW history AS (
+            PARTITION BY baseline_weekday, ARTIKEL_ID
+            ORDER BY feature_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE ml_pooled_coarse_baseline_statistics AS
+        WITH daily AS (
+            SELECT
+                history.feature_date,
+                EXTRACT(ISODOW FROM history.feature_date)::INTEGER
+                    AS baseline_weekday,
+                history.sourcing_group,
+                history.category_id,
+                COUNT(*) AS observation_count,
+                COUNT_IF(history.demand > 0) AS positive_observation_count,
+                SUM(history.demand) FILTER (WHERE history.demand > 0)
+                    AS positive_demand_sum
+            FROM ml_active_series_event_history AS history
+            INNER JOIN ml_calendar AS calendar
+                ON history.feature_date = calendar.period
+            WHERE calendar.holiday_event_window = 'none'
+                AND history.previous_active_days = {EVENT_BASELINE_ROWS}
+            GROUP BY
+                feature_date,
+                baseline_weekday,
+                history.sourcing_group,
+                history.category_id
+        )
+        SELECT
+            feature_date,
+            baseline_weekday,
+            sourcing_group,
+            category_id,
+            SUM(observation_count) OVER history AS baseline_observation_count,
+            SUM(positive_observation_count) OVER history
+                AS baseline_positive_observation_count,
+            SUM(positive_demand_sum) OVER history AS baseline_positive_demand_sum
+        FROM daily
+        WINDOW history AS (
+            PARTITION BY baseline_weekday, sourcing_group, category_id
+            ORDER BY feature_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         )
         """
     )
 
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE ml_active_series_recent_features AS
+        SELECT
+            ARTIKEL_ID,
+            MARKT_ID,
+            period AS feature_date,
+            AVG(demand) OVER active_6 AS rolling_6_mean,
+            AVG(demand) OVER active_24 AS rolling_24_mean,
+            AVG((demand > 0)::INTEGER) OVER active_6 AS demand_rate_last_6,
+            AVG((demand > 0)::INTEGER) OVER active_12 AS demand_rate_last_12,
+            AVG((demand > 0)::INTEGER) OVER active_24 AS demand_rate_last_24
+        FROM benchmark_daily_rows
+        WHERE is_active
+        WINDOW
+            active_6 AS (
+                PARTITION BY ARTIKEL_ID, MARKT_ID
+                ORDER BY period ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+            ),
+            active_12 AS (
+                PARTITION BY ARTIKEL_ID, MARKT_ID
+                ORDER BY period ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+            ),
+            active_24 AS (
+                PARTITION BY ARTIKEL_ID, MARKT_ID
+                ORDER BY period ROWS BETWEEN 23 PRECEDING AND CURRENT ROW
+            )
+        """
+    )
     con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE ml_series_features AS
@@ -991,48 +1390,26 @@ def create_feature_tables(
                     AS last_positive_period,
                 MAX(CASE WHEN action_flag = 1 THEN period END) OVER lifetime
                     AS last_action_period,
-                AVG(demand) OVER trailing_7 AS rolling_7_mean,
-                AVG(demand) OVER trailing_28 AS rolling_28_mean,
                 AVG((demand > 0)::INTEGER) FILTER (WHERE is_active) OVER trailing_28
                     AS rolling_28_demand_rate,
-                COUNT_IF(is_active AND demand > 0) OVER trailing_calendar_7
-                    AS demand_days_last_7,
-                COUNT_IF(is_active AND demand > 0) OVER trailing_calendar_28
-                    AS demand_days_last_28,
                 COALESCE(
                     SUM(action_flag) OVER trailing_calendar_28,
                     0
-                )::INTEGER AS actions_last_28d,
-                COUNT_IF(is_active AND demand > 0) OVER trailing_calendar_60
-                    AS demand_days_last_60
+                )::INTEGER AS actions_last_28d
             FROM benchmark_daily_rows AS d
             WINDOW
                 lifetime AS (
                     PARTITION BY ARTIKEL_ID, MARKT_ID
                     ORDER BY period ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                 ),
-                trailing_7 AS (
-                    PARTITION BY ARTIKEL_ID, MARKT_ID
-                    ORDER BY period ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
-                ),
                 trailing_28 AS (
                     PARTITION BY ARTIKEL_ID, MARKT_ID
                     ORDER BY period ROWS BETWEEN 27 PRECEDING AND CURRENT ROW
-                ),
-                trailing_calendar_7 AS (
-                    PARTITION BY ARTIKEL_ID, MARKT_ID
-                    ORDER BY period
-                    RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW
                 ),
                 trailing_calendar_28 AS (
                     PARTITION BY ARTIKEL_ID, MARKT_ID
                     ORDER BY period
                     RANGE BETWEEN INTERVAL 27 DAY PRECEDING AND CURRENT ROW
-                ),
-                trailing_calendar_60 AS (
-                    PARTITION BY ARTIKEL_ID, MARKT_ID
-                    ORDER BY period
-                    RANGE BETWEEN INTERVAL 59 DAY PRECEDING AND CURRENT ROW
                 )
         ),
         windowed AS (
@@ -1065,19 +1442,13 @@ def create_feature_tables(
             r.period AS feature_date,
             r.active_days,
             r.demand_days,
-            r.demand_days::DOUBLE / NULLIF(r.active_days, 0) AS demand_day_ratio,
             r.target_mean,
             r.last_positive_period,
             r.last_action_period,
             r.is_active AND r.demand > 0 AS is_positive_sale,
             r.active_days - COALESCE(r.last_positive_active_day, 0)
                 AS active_zero_demand_gap,
-            r.demand_days_last_7,
-            r.demand_days_last_28,
             r.actions_last_28d,
-            r.demand_days_last_60,
-            r.rolling_7_mean,
-            r.rolling_28_mean,
             r.rolling_28_demand_rate,
             r.ADI,
             r.CV2
@@ -1164,22 +1535,30 @@ def create_feature_tables(
         """
         CREATE OR REPLACE TEMP TABLE ml_series_weekday_features AS
         SELECT
-            ARTIKEL_ID,
-            MARKT_ID,
-            period AS feature_date,
-            EXTRACT(ISODOW FROM period)::INTEGER AS target_weekday,
-            AVG(demand) OVER weekday_4 AS same_weekday_mean_4,
-            AVG(demand) OVER weekday_8 AS same_weekday_mean_8
-        FROM benchmark_daily_rows
-        WHERE is_active
+            history.ARTIKEL_ID,
+            history.MARKT_ID,
+            history.period AS feature_date,
+            EXTRACT(ISODOW FROM history.period)::INTEGER AS target_weekday,
+            AVG(history.demand) OVER weekday_4 AS same_weekday_mean_4,
+            AVG(history.demand) OVER weekday_8 AS same_weekday_mean_8
+        FROM benchmark_daily_rows AS history
+        INNER JOIN ml_calendar AS calendar ON history.period = calendar.period
+        WHERE history.is_active
+            AND calendar.holiday_event_window = 'none'
         WINDOW
             weekday_4 AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID, EXTRACT(ISODOW FROM period)
-                ORDER BY period ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                PARTITION BY
+                    history.ARTIKEL_ID,
+                    history.MARKT_ID,
+                    EXTRACT(ISODOW FROM history.period)
+                ORDER BY history.period ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
             ),
             weekday_8 AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID, EXTRACT(ISODOW FROM period)
-                ORDER BY period ROWS BETWEEN 7 PRECEDING AND CURRENT ROW
+                PARTITION BY
+                    history.ARTIKEL_ID,
+                    history.MARKT_ID,
+                    EXTRACT(ISODOW FROM history.period)
+                ORDER BY history.period ROWS BETWEEN 7 PRECEDING AND CURRENT ROW
             )
         """
     )
@@ -1206,54 +1585,71 @@ def create_feature_tables(
             AVG(cross_store_mean) OVER (
                 PARTITION BY ARTIKEL_ID
                 ORDER BY period ROWS BETWEEN 27 PRECEDING AND CURRENT ROW
-            ) AS product_cross_store_mean_28,
-            SUM(product_demand) OVER (
-                PARTITION BY ARTIKEL_ID
-                ORDER BY period ROWS BETWEEN 55 PRECEDING AND CURRENT ROW
-            ) AS product_demand_56
+            ) AS product_cross_store_mean_28
         FROM ml_product_daily
         """
     )
     con.execute(
         """
-        CREATE OR REPLACE TABLE ml_product_annual_features AS
-        WITH annual_references AS (
-            SELECT
-                history.ARTIKEL_ID,
-                offsets.target_period
-            FROM ml_annual_offsets AS offsets
-            INNER JOIN ml_target_dates USING (target_period)
-            INNER JOIN ml_product_daily AS history
-                ON history.period = offsets.target_period
-                    - offsets.last_year_offset * INTERVAL 1 DAY
-        )
+        CREATE OR REPLACE TEMP TABLE ml_product_open_features AS
         SELECT
-            reference.ARTIKEL_ID,
-            reference.target_period,
+            product.ARTIKEL_ID,
+            product.period AS feature_date,
+            AVG(product.cross_store_mean) OVER (
+                PARTITION BY product.ARTIKEL_ID
+                ORDER BY product.period ROWS BETWEEN 47 PRECEDING AND CURRENT ROW
+            ) AS product_cross_store_open_mean_48
+        FROM ml_product_daily AS product
+        INNER JOIN ml_calendar AS calendar ON product.period = calendar.period
+        WHERE product.active_stores > 0
+            AND calendar.holiday_event_window = 'none'
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_product_annual_features AS
+        SELECT
+            history.ARTIKEL_ID,
+            candidate.target_period,
             AVG(history.cross_store_mean)
+                FILTER (
+                    WHERE candidate.anchor_kind = 'event'
+                        OR (
+                            reference_calendar.holiday_event_window
+                                = target_calendar.holiday_event_window
+                            AND reference_calendar.event_name
+                                = target_calendar.event_name
+                        )
+                )
                 AS product_cross_store_same_weekday_last_year_mean
-        FROM annual_references AS reference
-        INNER JOIN ml_annual_reference_dates AS candidate
-            ON reference.target_period = candidate.target_period
-        LEFT JOIN ml_product_daily AS history
-            ON reference.ARTIKEL_ID = history.ARTIKEL_ID
-            AND history.period = candidate.reference_period
-        GROUP BY reference.ARTIKEL_ID, reference.target_period
+        FROM ml_annual_reference_dates AS candidate
+        INNER JOIN ml_target_dates USING (target_period)
+        INNER JOIN ml_product_daily AS history
+            ON history.period = candidate.reference_period
+        INNER JOIN ml_calendar AS target_calendar
+            ON candidate.target_period = target_calendar.period
+        INNER JOIN ml_calendar AS reference_calendar
+            ON candidate.reference_period = reference_calendar.period
+        GROUP BY history.ARTIKEL_ID, candidate.target_period
         """
     )
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE ml_product_weekday_features AS
         SELECT
-            ARTIKEL_ID,
-            period AS feature_date,
-            EXTRACT(ISODOW FROM period)::INTEGER AS target_weekday,
-            SUM(product_demand) OVER (
-                PARTITION BY ARTIKEL_ID, EXTRACT(ISODOW FROM period)
-                ORDER BY period ROWS BETWEEN 7 PRECEDING AND CURRENT ROW
-            ) AS product_weekday_demand_8
-        FROM ml_product_daily
-        WHERE active_stores > 0
+            product.ARTIKEL_ID,
+            product.period AS feature_date,
+            EXTRACT(ISODOW FROM product.period)::INTEGER AS target_weekday,
+            AVG(product.cross_store_mean) OVER (
+                PARTITION BY
+                    product.ARTIKEL_ID,
+                    EXTRACT(ISODOW FROM product.period)
+                ORDER BY product.period ROWS BETWEEN 7 PRECEDING AND CURRENT ROW
+            ) AS product_weekday_cross_store_mean_8
+        FROM ml_product_daily AS product
+        INNER JOIN ml_calendar AS calendar ON product.period = calendar.period
+        WHERE product.active_stores > 0
+            AND calendar.holiday_event_window = 'none'
         """
     )
     con.execute(
@@ -1309,13 +1705,27 @@ def create_feature_tables(
             -- joins run only over series that survive the maturity gate.
             WHERE f.active_days >= {int(design.min_active_days)}
         ),
+        origin_history_with_rates AS (
+            SELECT
+                h.*,
+                rates.rolling_6_mean,
+                rates.rolling_24_mean,
+                rates.demand_rate_last_6,
+                rates.demand_rate_last_12,
+                rates.demand_rate_last_24
+            FROM origin_history_base AS h
+            ASOF LEFT JOIN ml_active_series_recent_features AS rates
+                ON h.ARTIKEL_ID = rates.ARTIKEL_ID
+                AND h.MARKT_ID = rates.MARKT_ID
+                AND h.origin > rates.feature_date
+        ),
         origin_history_with_gaps AS (
             SELECT
                 h.*,
                 g.completed_gap_count,
                 g.historical_gap_p90,
                 g.historical_max_gap
-            FROM origin_history_base AS h
+            FROM origin_history_with_rates AS h
             ASOF LEFT JOIN ml_gap_statistics AS g
                 ON h.ARTIKEL_ID = g.ARTIKEL_ID
                 AND h.MARKT_ID = g.MARKT_ID
@@ -1346,15 +1756,22 @@ def create_feature_tables(
             FROM origin_history_with_reference AS h
         ),
         origin_history_with_product AS (
-            SELECT h.*, x.product_cross_store_mean_28, x.product_demand_56
+            SELECT h.*, x.product_cross_store_mean_28
             FROM origin_history AS h
             ASOF LEFT JOIN ml_product_features AS x
                 ON h.ARTIKEL_ID = x.ARTIKEL_ID
                 AND h.origin > x.feature_date
         ),
+        origin_history_with_product_profile AS (
+            SELECT h.*, x.product_cross_store_open_mean_48
+            FROM origin_history_with_product AS h
+            ASOF LEFT JOIN ml_product_open_features AS x
+                ON h.ARTIKEL_ID = x.ARTIKEL_ID
+                AND h.origin > x.feature_date
+        ),
         origin_history_with_store_category AS (
             SELECT h.*, x.store_category_mean_28
-            FROM origin_history_with_product AS h
+            FROM origin_history_with_product_profile AS h
             ASOF LEFT JOIN ml_store_category_features AS x
                 ON h.MARKT_ID = x.MARKT_ID
                 AND h.category_id = x.category_id
@@ -1415,12 +1832,185 @@ def create_feature_tables(
             probe.ARTIKEL_ID,
             probe.origin,
             probe.target_weekday,
-            x.product_weekday_demand_8
+            x.product_weekday_cross_store_mean_8
         FROM probe
         ASOF LEFT JOIN ml_product_weekday_features AS x
             ON probe.ARTIKEL_ID = x.ARTIKEL_ID
             AND probe.target_weekday = x.target_weekday
             AND probe.origin > x.feature_date
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE ml_origin_event_lifts AS
+        WITH probe AS (
+            SELECT
+                origin,
+                (
+                    origin + target_offset.day_offset * INTERVAL 1 DAY
+                )::DATE AS target_period
+            FROM ml_snapshot_origins
+            CROSS JOIN range({int(design.forecast_horizon_days)})
+                AS target_offset(day_offset)
+        ),
+        event_probe AS (
+            SELECT
+                probe.origin,
+                probe.target_period,
+                calendar.calendar_event_key,
+                calendar.calendar_event_closure_block_length
+            FROM probe
+            INNER JOIN ml_calendar AS calendar
+                ON probe.target_period = calendar.period
+            WHERE calendar.holiday_event_window <> 'none'
+        ),
+        event_cells AS (
+            SELECT DISTINCT
+                origin,
+                calendar_event_key,
+                calendar_event_closure_block_length
+            FROM event_probe
+        ),
+        event_history_at_origin AS (
+            SELECT
+                cells.origin,
+                cells.calendar_event_key,
+                cells.calendar_event_closure_block_length,
+                pooled.feature_date,
+                pooled.event_weekday,
+                pooled.ARTIKEL_ID,
+                pooled.sourcing_group,
+                pooled.category_id,
+                pooled.event_observation_count,
+                pooled.event_positive_observation_count,
+                pooled.event_positive_demand_sum
+            FROM event_cells AS cells
+            LEFT JOIN ml_pooled_event_statistics AS pooled
+                ON cells.calendar_event_key = pooled.calendar_event_key
+                AND cells.calendar_event_closure_block_length
+                    = pooled.calendar_event_closure_block_length
+                AND pooled.feature_date < cells.origin
+        ),
+        context_at_origin AS (
+            SELECT
+                event.*,
+                article.baseline_observation_count
+                    AS article_baseline_observation_count,
+                article.baseline_positive_observation_count
+                    AS article_baseline_positive_observation_count,
+                article.baseline_positive_demand_sum
+                    AS article_baseline_positive_demand_sum,
+                coarse.baseline_observation_count
+                    AS coarse_baseline_observation_count,
+                coarse.baseline_positive_observation_count
+                    AS coarse_baseline_positive_observation_count,
+                coarse.baseline_positive_demand_sum
+                    AS coarse_baseline_positive_demand_sum
+            FROM event_history_at_origin AS event
+            ASOF LEFT JOIN ml_pooled_article_baseline_statistics AS article
+                ON event.ARTIKEL_ID = article.ARTIKEL_ID
+                AND event.event_weekday = article.baseline_weekday
+                AND event.origin > article.feature_date
+            ASOF LEFT JOIN ml_pooled_coarse_baseline_statistics AS coarse
+                ON event.event_weekday = coarse.baseline_weekday
+                AND event.sourcing_group = coarse.sourcing_group
+                AND event.category_id = coarse.category_id
+                AND event.origin > coarse.feature_date
+        ),
+        resolved_baselines AS (
+            SELECT
+                context.*,
+                CASE
+                    WHEN article_baseline_observation_count
+                            >= {EVENT_MIN_ARTICLE_BASELINE_OBSERVATIONS}
+                        AND article_baseline_positive_observation_count > 0
+                    THEN article_baseline_positive_observation_count::DOUBLE
+                        / article_baseline_observation_count
+                    ELSE coarse_baseline_positive_observation_count::DOUBLE
+                        / NULLIF(coarse_baseline_observation_count, 0)
+                END AS baseline_occurrence_rate,
+                CASE
+                    WHEN article_baseline_observation_count
+                            >= {EVENT_MIN_ARTICLE_BASELINE_OBSERVATIONS}
+                        AND article_baseline_positive_observation_count > 0
+                        AND article_baseline_positive_demand_sum > 0
+                    THEN article_baseline_positive_demand_sum
+                        / article_baseline_positive_observation_count
+                    ELSE coarse_baseline_positive_demand_sum
+                        / NULLIF(coarse_baseline_positive_observation_count, 0)
+                END AS baseline_positive_mean
+            FROM context_at_origin AS context
+        ),
+        contributions AS (
+            SELECT
+                origin,
+                calendar_event_key,
+                calendar_event_closure_block_length,
+                feature_date,
+                event_observation_count,
+                CASE WHEN baseline_occurrence_rate > 0
+                    THEN event_positive_observation_count END
+                    AS occurrence_numerator,
+                CASE WHEN baseline_occurrence_rate > 0
+                    THEN event_observation_count * baseline_occurrence_rate END
+                    AS occurrence_denominator,
+                CASE WHEN baseline_positive_mean > 0
+                    THEN event_positive_demand_sum END AS quantity_numerator,
+                CASE WHEN baseline_positive_mean > 0
+                    THEN event_positive_observation_count * baseline_positive_mean END
+                    AS quantity_denominator
+            FROM resolved_baselines
+        ),
+        cell_components AS (
+            SELECT
+                origin,
+                calendar_event_key,
+                calendar_event_closure_block_length,
+                SUM(event_observation_count)::BIGINT AS row_count,
+                COUNT(DISTINCT feature_date)::INTEGER AS date_count,
+                SUM(occurrence_numerator)::DOUBLE
+                    / NULLIF(SUM(occurrence_denominator), 0)
+                    AS occurrence_lift,
+                SUM(quantity_numerator)
+                    / NULLIF(SUM(quantity_denominator), 0)
+                    AS quantity_lift
+            FROM contributions
+            GROUP BY
+                origin,
+                calendar_event_key,
+                calendar_event_closure_block_length
+        ),
+        selected AS (
+            SELECT
+                probe.origin,
+                probe.target_period,
+                cell.row_count AS event_lift_pooled_cell_row_count,
+                cell.date_count AS event_lift_pooled_cell_date_count,
+                CASE
+                    WHEN cell.date_count >= {EVENT_MIN_POOLED_CELL_DATES}
+                    THEN cell.occurrence_lift
+                END AS event_lift_pooled_occurrence,
+                CASE
+                    WHEN cell.date_count >= {EVENT_MIN_POOLED_CELL_DATES}
+                    THEN cell.quantity_lift
+                END AS event_lift_pooled_quantity
+            FROM event_probe AS probe
+            LEFT JOIN cell_components AS cell
+                ON probe.origin = cell.origin
+                AND probe.calendar_event_key = cell.calendar_event_key
+                AND probe.calendar_event_closure_block_length
+                    = cell.calendar_event_closure_block_length
+        )
+        SELECT
+            origin,
+            target_period,
+            event_lift_pooled_cell_row_count,
+            event_lift_pooled_cell_date_count,
+            event_lift_pooled_occurrence,
+            event_lift_pooled_quantity,
+            event_lift_pooled_occurrence * event_lift_pooled_quantity
+                AS event_lift_pooled_total
+        FROM selected
         """
     )
     # The feature query runs on separate cursors when origins are materialized
@@ -1457,10 +2047,16 @@ def create_feature_tables(
         """
     )
     for resolved_table in (
+        "ml_active_series_recent_features",
+        "ml_active_series_event_history",
+        "ml_pooled_event_statistics",
+        "ml_pooled_article_baseline_statistics",
+        "ml_pooled_coarse_baseline_statistics",
         "ml_series_features",
         "ml_gap_statistics",
         "ml_series_weekday_features",
         "ml_product_features",
+        "ml_product_open_features",
         "ml_product_weekday_features",
         "ml_store_category_features",
         "ml_sourcing_group_action_features",
@@ -1563,14 +2159,16 @@ def _feature_query_statement(
         with_annual_history AS (
             SELECT
                 t.*,
-                (a.target_period IS NOT NULL)::INTEGER AS has_annual_history,
+                COALESCE(a.annual_lookup_days_available, 0)::INTEGER
+                    AS annual_lookup_days_available,
                 a.same_weekday_last_year_mean,
                 w.same_week_last_year_mean,
                 x.product_cross_store_same_weekday_last_year_mean,
-                e.centered_7_demand_mean AS same_event_offset_last_year_mean
+                e.event_lift_series,
+                pooled.event_lift_pooled_occurrence,
+                pooled.event_lift_pooled_quantity,
+                pooled.event_lift_pooled_total
             FROM targets AS t
-            INNER JOIN ml_annual_offsets AS annual_offset
-                ON t.period = annual_offset.target_period
             LEFT JOIN ml_series_annual_features AS a
                 ON t.ARTIKEL_ID = a.ARTIKEL_ID
                 AND t.MARKT_ID = a.MARKT_ID
@@ -1578,20 +2176,17 @@ def _feature_query_statement(
             LEFT JOIN ml_series_weekly_annual_features AS w
                 ON t.ARTIKEL_ID = w.ARTIKEL_ID
                 AND t.MARKT_ID = w.MARKT_ID
-                AND DATE_TRUNC('week', t.period)
-                    - annual_offset.last_year_offset * INTERVAL 1 DAY
-                    = w.reference_week_start
+                AND t.period = w.target_period
             LEFT JOIN ml_product_annual_features AS x
                 ON t.ARTIKEL_ID = x.ARTIKEL_ID
                 AND t.period = x.target_period
-            LEFT JOIN ml_calendar AS event_calendar
-                ON t.period = event_calendar.period
-            LEFT JOIN ml_series_centered_7_features AS e
+            LEFT JOIN ml_series_event_lifts AS e
                 ON t.ARTIKEL_ID = e.ARTIKEL_ID
                 AND t.MARKT_ID = e.MARKT_ID
-                AND event_calendar.previous_event_offset_date = e.reference_period
-                AND ABS(event_calendar.days_to_nearest_event)
-                    <= {MAX_EVENT_OFFSET_DAYS}
+                AND t.period = e.target_period
+            LEFT JOIN ml_origin_event_lifts AS pooled
+                ON t.origin = pooled.origin
+                AND t.period = pooled.target_period
         ),
         with_weekday AS (
             SELECT t.*, w.same_weekday_mean_4, w.same_weekday_mean_8
@@ -1606,7 +2201,7 @@ def _feature_query_statement(
                 AND t.target_weekday = w.target_weekday
         ),
         with_product_weekday AS (
-            SELECT p.*, x.product_weekday_demand_8
+            SELECT p.*, x.product_weekday_cross_store_mean_8
             FROM with_weekday AS p
             LEFT JOIN (
                 SELECT * FROM ml_origin_product_weekday_features
@@ -1645,33 +2240,33 @@ def _feature_query_statement(
             p.mean_action_lift_in_sourcing_group,
             p.active_days AS active_days_before_origin,
             p.demand_days AS demand_days_before_origin,
-            p.demand_day_ratio,
             p.active_zero_demand_gap,
-            p.demand_days_last_7,
-            p.demand_days_last_28,
-            p.demand_days_last_60,
+            p.demand_rate_last_6,
+            p.demand_rate_last_12,
+            p.demand_rate_last_24,
             p.historical_p90_gap,
             p.current_gap_over_historical_p90_gap,
             p.same_weekday_lag_7,
             p.same_weekday_lag_14,
-            p.rolling_7_mean,
-            p.rolling_28_mean,
+            p.rolling_6_mean,
+            p.rolling_24_mean,
             p.rolling_28_demand_rate,
             p.same_weekday_mean_4,
             p.same_weekday_mean_8,
-            p.has_annual_history,
+            p.annual_lookup_days_available,
             p.same_weekday_last_year_mean,
             p.same_week_last_year_mean,
             p.product_cross_store_same_weekday_last_year_mean,
-            p.same_event_offset_last_year_mean,
+            p.event_lift_series,
+            p.event_lift_pooled_occurrence,
+            p.event_lift_pooled_quantity,
+            p.event_lift_pooled_total,
             p.ADI,
             p.CV2,
             p.product_cross_store_mean_28,
-            CASE
-                WHEN p.product_demand_56 > 0
-                    THEN p.product_weekday_demand_8 / p.product_demand_56
-                ELSE 1.0 / 7.0
-            END AS product_weekday_profile_value,
+            p.product_weekday_cross_store_mean_8
+                / NULLIF(p.product_cross_store_open_mean_48, 0)
+                AS product_weekday_profile_value,
             p.store_category_mean_28,
             p.rolling_28_demand_rate AS recent_occurrence_rate,
             p.calendar_days_since_last_demand,

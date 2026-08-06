@@ -34,6 +34,24 @@ from src.models.lightgbm.common import (
 from src.models.lightgbm.config import LightGBMModelConfig
 
 TWO_STAGE_MODEL_NAME = "global_lightgbm_two_stage"
+OCCURRENCE_FEATURE_COLUMNS = tuple(
+    feature
+    for feature in FEATURE_COLUMNS
+    if feature
+    not in {
+        "event_lift_pooled_quantity",
+        "event_lift_pooled_total",
+    }
+)
+QUANTITY_FEATURE_COLUMNS = tuple(
+    feature
+    for feature in FEATURE_COLUMNS
+    if feature
+    not in {
+        "event_lift_pooled_occurrence",
+        "event_lift_pooled_total",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -140,6 +158,24 @@ def _fit_origin(
     quantity_params: dict[str, Any] | None = None,
     feature_columns: tuple[str, ...] = FEATURE_COLUMNS,
 ) -> LightGBMVariantResult:
+    occurrence_features = tuple(
+        feature
+        for feature in feature_columns
+        if feature
+        not in {
+            "event_lift_pooled_quantity",
+            "event_lift_pooled_total",
+        }
+    )
+    quantity_features = tuple(
+        feature
+        for feature in feature_columns
+        if feature
+        not in {
+            "event_lift_pooled_occurrence",
+            "event_lift_pooled_total",
+        }
+    )
     (
         occurrence,
         occurrence_history,
@@ -156,7 +192,7 @@ def _fit_origin(
             frames.training["actual"].gt(0).astype(np.int8),
             frames.validation["actual"].gt(0).astype(np.int8),
         ),
-        feature_columns=feature_columns,
+        feature_columns=occurrence_features,
         params=occurrence_params,
     )
     positive_training = frames.training.loc[frames.training["actual"].gt(0)].copy()
@@ -180,7 +216,7 @@ def _fit_origin(
             positive_training[NORMALIZED_TARGET_COLUMN],
             positive_validation[NORMALIZED_TARGET_COLUMN],
         ),
-        feature_columns=feature_columns,
+        feature_columns=quantity_features,
         restore_target_scale=True,
         params=quantity_params,
     )
@@ -222,7 +258,7 @@ def _fit_origin(
                 "best_iteration": occurrence_iteration,
                 "objective": "binary",
                 "early_stopping_metric": "binary_logloss",
-                "features": len(feature_columns),
+                "features": len(occurrence_features),
             },
             {
                 "model": TWO_STAGE_MODEL_NAME,
@@ -233,7 +269,7 @@ def _fit_origin(
                 "best_iteration": quantity_iteration,
                 "objective": "gamma",
                 "early_stopping_metric": "gamma_deviance",
-                "features": len(feature_columns),
+                "features": len(quantity_features),
             },
         ]
     )

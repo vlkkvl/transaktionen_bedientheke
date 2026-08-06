@@ -82,30 +82,29 @@ WEEKLY_FEATURE_COLUMNS = (
     "mean_action_lift_in_sourcing_group",
     "active_days_before_origin",
     "demand_days_before_origin",
-    "demand_day_ratio",
     "active_zero_demand_gap",
-    "demand_days_last_7",
-    "demand_days_last_28",
-    "demand_days_last_60",
+    "demand_rate_last_6",
+    "demand_rate_last_12",
+    "demand_rate_last_24",
     "historical_p90_gap",
     "current_gap_over_historical_p90_gap",
     "same_weekday_lag_7",
     "same_weekday_lag_14",
-    "rolling_7_mean",
-    "rolling_28_mean",
+    "rolling_6_mean",
+    "rolling_24_mean",
     "rolling_28_demand_rate",
-    "has_annual_history",
+    "annual_lookup_days_available",
     "same_weekday_last_year_mean",
     "same_week_last_year_mean",
     "product_cross_store_same_weekday_last_year_mean",
-    "same_event_offset_last_year_mean",
+    "event_lift_series",
     "ADI",
     "CV2",
     "product_cross_store_mean_28",
     "store_category_mean_28",
     "same_weekday_mean_4_total",
     "same_weekday_mean_8_total",
-    "product_weekday_profile_sum",
+    "product_weekday_profile_mean",
 )
 
 WEEKLY_CATEGORICAL_FEATURES = (
@@ -126,14 +125,17 @@ def make_weekly_frame(frame: pd.DataFrame) -> pd.DataFrame:
     active_only_signals = (
         "same_weekday_mean_4",
         "same_weekday_mean_8",
-        "product_weekday_profile_value",
         "same_weekday_lag_7",
         "same_weekday_lag_14",
+        "annual_lookup_days_available",
         "same_weekday_last_year_mean",
         "product_cross_store_same_weekday_last_year_mean",
-        "same_event_offset_last_year_mean",
+        "event_lift_series",
     )
     prepared.loc[~prepared["is_active"], list(active_only_signals)] = 0.0
+    prepared.loc[
+        ~prepared["is_active"], "product_weekday_profile_value"
+    ] = np.nan
     prepared["event_window_day"] = (
         prepared["holiday_event_window"].ne("none").astype(int)
     )
@@ -164,11 +166,10 @@ def make_weekly_frame(frame: pd.DataFrame) -> pd.DataFrame:
         ),
         active_days_before_origin=("active_days_before_origin", "first"),
         demand_days_before_origin=("demand_days_before_origin", "first"),
-        demand_day_ratio=("demand_day_ratio", "first"),
         active_zero_demand_gap=("active_zero_demand_gap", "first"),
-        demand_days_last_7=("demand_days_last_7", "first"),
-        demand_days_last_28=("demand_days_last_28", "first"),
-        demand_days_last_60=("demand_days_last_60", "first"),
+        demand_rate_last_6=("demand_rate_last_6", "first"),
+        demand_rate_last_12=("demand_rate_last_12", "first"),
+        demand_rate_last_24=("demand_rate_last_24", "first"),
         historical_p90_gap=("historical_p90_gap", "first"),
         current_gap_over_historical_p90_gap=(
             "current_gap_over_historical_p90_gap",
@@ -176,27 +177,24 @@ def make_weekly_frame(frame: pd.DataFrame) -> pd.DataFrame:
         ),
         same_weekday_lag_7=("same_weekday_lag_7", "sum"),
         same_weekday_lag_14=("same_weekday_lag_14", "sum"),
-        rolling_7_mean=("rolling_7_mean", "first"),
-        rolling_28_mean=("rolling_28_mean", "first"),
+        rolling_6_mean=("rolling_6_mean", "first"),
+        rolling_24_mean=("rolling_24_mean", "first"),
         rolling_28_demand_rate=("rolling_28_demand_rate", "first"),
-        has_annual_history=("has_annual_history", "min"),
+        annual_lookup_days_available=("annual_lookup_days_available", "sum"),
         same_weekday_last_year_mean=("same_weekday_last_year_mean", "sum"),
         same_week_last_year_mean=("same_week_last_year_mean", "first"),
         product_cross_store_same_weekday_last_year_mean=(
             "product_cross_store_same_weekday_last_year_mean",
             "sum",
         ),
-        same_event_offset_last_year_mean=(
-            "same_event_offset_last_year_mean",
-            "sum",
-        ),
+        event_lift_series=("event_lift_series", "sum"),
         ADI=("ADI", "first"),
         CV2=("CV2", "first"),
         product_cross_store_mean_28=("product_cross_store_mean_28", "first"),
         store_category_mean_28=("store_category_mean_28", "first"),
         same_weekday_mean_4_total=("same_weekday_mean_4", "sum"),
         same_weekday_mean_8_total=("same_weekday_mean_8", "sum"),
-        product_weekday_profile_sum=("product_weekday_profile_value", "sum"),
+        product_weekday_profile_mean=("product_weekday_profile_value", "mean"),
     ).reset_index()
     weekly["actual"] = weekly.pop("weekly_actual")
     return weekly

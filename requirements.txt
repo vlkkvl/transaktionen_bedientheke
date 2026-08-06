@@ -86,6 +86,7 @@ ptyprocess==0.7.0
 pure_eval==0.2.3
 pyarrow==24.0.0
 pycparser==3.0
+pyfixest==0.60.0
 Pygments==2.20.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
