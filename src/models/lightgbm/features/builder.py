@@ -8,13 +8,17 @@ from typing import Any, Iterable, Iterator
 import unicodedata
 
 import duckdb
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from dateutil.easter import easter
 
 from src.data.preparation.distribute_sales_over_active_days import (
+    HOLIDAY_SUBDIVISIONS,
+    create_germany_holidays,
     create_germany_ni_holidays,
+    store_subdivisions,
 )
 from src.models.benchmark.config import ROOT, BenchmarkDesign
 from src.models.benchmark.evaluation import (
@@ -37,6 +41,32 @@ EVENT_MIN_ARTICLE_BASELINE_OBSERVATIONS = 30
 # Across the 72 production origins, own-event cells contain 2-14 distinct
 # historical event dates (median 7). Two or three dates are treated as thin.
 EVENT_MIN_POOLED_CELL_DATES = 4
+# A position cell holds exactly one date per historical event occurrence, so
+# two dates mean two different years and average out single-day shocks.
+EVENT_MIN_POSITION_CELL_DATES = 2
+# Position estimates are shrunk toward the window-level lift with this prior
+# weight (in distinct-date units), so single-year cells stay usable instead of
+# being hidden: value = (dates * position + weight * window) / (dates + weight).
+EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT = 1
+# Weather. `05_10` established that the usable weather signal is the day-level
+# temperature *anomaly* interacted with the article: the seasonal path itself is
+# already carried by month/iso_week/trailing means, and the network's within-day
+# spatial temperature spread is negligible (median 0.53 C). The normal must be a
+# same-calendar-day average over earlier years, never a trailing mean: a trailing
+# baseline lags the spring warming and turns a whole spring evaluation window
+# into a spurious warm anomaly.
+ERA5_WEATHER_PATH = ROOT / "data" / "interim" / "weather" / "era5_grid_daily_weather.csv"
+MARKET_COORDINATES_PATH = ROOT / "data" / "raw" / "maerkte" / "maerkte.csv"
+ERA5_GRID_DEGREES = 0.25
+WEATHER_SEASONAL_WINDOW_DAYS = 7
+WEATHER_MIN_SEASONAL_OBSERVATIONS = 10
+# `06_01` shipped the raw anomaly and recovered only ~1/6 of the signal `05_10`
+# measured: the boosters must rediscover an article-specific slope by splitting
+# jointly on ARTIKEL_ID and the anomaly, which they do only partially. The
+# sensitivity below hands that interaction over directly. `06_01` also showed the
+# response is warm-side only (origins >= +2 C gained 0.61 pp, origins <= -2 C
+# gained nothing), so the regressor is the warm half of the anomaly.
+WEATHER_MIN_SENSITIVITY_DAYS = 150
 FIXED_EVENT_DATES = {
     "new_year": (1, 1, "Neujahr"),
     "labour_day": (5, 1, "Erster Mai"),
@@ -363,6 +393,8 @@ FEATURE_COLUMNS = (
     "same_weekday_lag_14",
     "rolling_6_mean",
     "rolling_24_mean",
+    "rolling_24_mean_non_event",
+    "event_window_share_last_24",
     "rolling_28_demand_rate",
     "same_weekday_mean_4",
     "same_weekday_mean_8",
@@ -375,6 +407,9 @@ FEATURE_COLUMNS = (
     "event_lift_pooled_occurrence",
     "event_lift_pooled_quantity",
     "event_lift_pooled_total",
+    "event_position_lift_occurrence",
+    "event_position_lift_quantity",
+    "event_position_lift_total",
     # Demand regime
     "ADI",
     "CV2",
@@ -382,6 +417,9 @@ FEATURE_COLUMNS = (
     "product_cross_store_mean_28",
     "product_weekday_profile_value",
     "store_category_mean_28",
+    # Weather
+    "temperature_anomaly_c",
+    "temperature_expected_lift",
 )
 
 DIRECT_FEATURE_COLUMNS = tuple(
@@ -391,6 +429,8 @@ DIRECT_FEATURE_COLUMNS = tuple(
     not in {
         "event_lift_pooled_occurrence",
         "event_lift_pooled_quantity",
+        "event_position_lift_occurrence",
+        "event_position_lift_quantity",
     }
 )
 
@@ -555,6 +595,17 @@ FEATURE_DESCRIPTIONS = {
         "strictly before the origin. Inactive and missing dates are removed before "
         "forming the window, so the denominator is 24 when sufficient history exists."
     ),
+    "rolling_24_mean_non_event": (
+        "Arithmetic mean of demand over the final 24 active article-store rows "
+        "strictly before the origin whose holiday-event window is none. Event-window, "
+        "inactive, and missing dates are removed before the window is formed, so "
+        "holiday run-up and post-event echo days cannot inflate the level estimate."
+    ),
+    "event_window_share_last_24": (
+        "Share of the final 24 active article-store rows strictly before the origin "
+        "that fall inside a calendar holiday-event window. It signals how strongly "
+        "run-up demand can contaminate the trailing windows that include event days."
+    ),
     "rolling_28_demand_rate": (
         "Share of active observations with demand > 0 within the final 28 observed "
         "article-store rows strictly before the origin. The denominator includes only "
@@ -635,6 +686,32 @@ FEATURE_DESCRIPTIONS = {
         "event_lift_pooled_occurrence multiplied by event_lift_pooled_quantity. Only "
         "observations strictly before the forecast origin enter either component."
     ),
+    "event_position_lift_occurrence": (
+        "Pooled occurrence lift restricted to historical observations sharing the "
+        "target's exact signed calendar-day offset to the event, in addition to the "
+        "event and closure-block-length keys of event_lift_pooled_occurrence. "
+        "Baselines are identical to the window-level feature. The position estimate "
+        "is shrunk toward the gated window-level lift with a one-date prior weight; "
+        "without a window-level value, cells with fewer than two distinct historical "
+        "event dates yield missing values. Only observations strictly before the "
+        "forecast origin enter the estimate."
+    ),
+    "event_position_lift_quantity": (
+        "Pooled positive-quantity lift restricted to historical observations sharing "
+        "the target's exact signed calendar-day offset to the event, in addition to "
+        "the event and closure-block-length keys of event_lift_pooled_quantity. "
+        "Baselines are identical to the window-level feature. The position estimate "
+        "is shrunk toward the gated window-level lift with a one-date prior weight; "
+        "without a window-level value, cells with fewer than two distinct historical "
+        "event dates yield missing values. Only observations strictly before the "
+        "forecast origin enter the estimate."
+    ),
+    "event_position_lift_total": (
+        "Total position-keyed demand lift for direct models, defined exactly as "
+        "event_position_lift_occurrence multiplied by event_position_lift_quantity. "
+        "Only observations strictly before the forecast origin enter either "
+        "component."
+    ),
     "ADI": (
         "Count of active article-store observations divided by the count of active "
         "positive-demand observations, using all rows strictly before the origin. "
@@ -672,6 +749,33 @@ FEATURE_DESCRIPTIONS = {
         "observed store-category-date rows strictly before the origin. Dates with no "
         "active article yield null and are excluded from the outer denominator; missing "
         "dates are absent and can make the row window span more than 28 calendar days."
+    ),
+    "temperature_anomaly_c": (
+        "Daily mean 2 m temperature at the store on the forecast day, minus a seasonal "
+        "normal for that store and calendar day, in degrees Celsius. The store is "
+        "assigned the nearest 0.25 degree ERA5 grid cell. The normal is the mean "
+        "temperature over dates within seven calendar days of the target day-of-year, "
+        "taken strictly before the origin, and is null unless at least ten such dates "
+        "exist; the feature is then null as well. Positive values mean the day is "
+        "warmer than normal for its time of year. The seasonal path itself is already "
+        "carried by month, ISO week, and the trailing means, so only the deviation is "
+        "exposed here. A trailing-window baseline is deliberately not used: it lags the "
+        "seasonal cycle and would report a systematic warm anomaly through spring."
+    ),
+    "temperature_expected_lift": (
+        "The article's own temperature sensitivity multiplied by the warm part of the "
+        "store's temperature anomaly on the forecast day, so the value is the expected "
+        "relative demand change and is zero on days at or below the seasonal normal. "
+        "The sensitivity is refitted at every origin from article-date rows strictly "
+        "before it: demand is averaged across active stores, divided by that article's "
+        "own weekday mean inside the same window so weekday structure cannot appear as a "
+        "temperature response, and regressed on the warm part of the network temperature "
+        "anomaly. At least 150 article-dates are required. Each slope is then shrunk "
+        "toward zero by empirical Bayes, keeping the share of its variance that is "
+        "signal, with the between-article variance estimated separately at every origin "
+        "as the spread of the fitted slopes minus their mean sampling variance. Articles "
+        "without a slope contribute zero. Only the warm half is used because the batch "
+        "in 06_01 found gains on origins warmer than normal and none on colder ones."
     ),
 }
 
@@ -874,13 +978,67 @@ class GlobalLightGBMFrames:
     origin_frames: tuple["GlobalLightGBMFrames", ...] = ()
 
 
-def _holiday_calendar(start: object, end: object) -> pd.DataFrame:
-    """Build Niedersachsen holiday and retail-event calendar features."""
+def _store_daily_temperature() -> pd.DataFrame:
+    """Return daily mean temperature per store, or an empty frame when unavailable.
+
+    Stores are assigned to the nearest 0.25 degree ERA5 grid cell, the same
+    mapping used in ``notebooks/01_data_understanding/01_05_weather.ipynb``.
+    Missing inputs yield an empty frame so the feature degrades to NULL rather
+    than breaking the build on installations without the weather cache.
+    """
+    if not ERA5_WEATHER_PATH.exists() or not MARKET_COORDINATES_PATH.exists():
+        return pd.DataFrame(
+            columns=["MARKT_ID", "period", "temperature_c"]
+        ).astype({"MARKT_ID": "int64", "temperature_c": "float64"})
+    stores = pd.read_csv(
+        MARKET_COORDINATES_PATH, usecols=["MARKT_ID", "LONGITUDE", "LATITUDE"]
+    ).dropna(subset=["LONGITUDE", "LATITUDE"])
+    weather = pd.read_csv(
+        ERA5_WEATHER_PATH,
+        usecols=["date", "era5_latitude", "era5_longitude", "temperature_mean_c"],
+        parse_dates=["date"],
+    ).dropna(subset=["temperature_mean_c"])
+    if stores.empty or weather.empty:
+        return pd.DataFrame(
+            columns=["MARKT_ID", "period", "temperature_c"]
+        ).astype({"MARKT_ID": "int64", "temperature_c": "float64"})
+
+    def nearest_cell(values: pd.Series) -> pd.Series:
+        return (
+            np.floor(values.astype(float) / ERA5_GRID_DEGREES + 0.5)
+            * ERA5_GRID_DEGREES
+        ).round(2)
+
+    stores["era5_latitude"] = nearest_cell(stores["LATITUDE"])
+    stores["era5_longitude"] = nearest_cell(stores["LONGITUDE"])
+    joined = stores.merge(
+        weather, on=["era5_latitude", "era5_longitude"], how="inner"
+    )
+    return pd.DataFrame(
+        {
+            "MARKT_ID": joined["MARKT_ID"].astype("int64"),
+            "period": joined["date"].dt.date,
+            "temperature_c": joined["temperature_mean_c"].astype("float64"),
+        }
+    ).drop_duplicates(["MARKT_ID", "period"])
+
+
+def _holiday_calendar(
+    start: object, end: object, subdivision: str | None = None
+) -> pd.DataFrame:
+    """Build holiday and retail-event calendar features for one Bundesland.
+
+    ``subdivision`` defaults to Niedersachsen. When it is supplied the returned
+    frame carries a ``subdivision`` column so per-store calendars can be stacked.
+    """
     start_date = pd.Timestamp(start).normalize()
     end_date = pd.Timestamp(end).normalize()
     dates = pd.date_range(start_date, end_date, freq="D")
-    holiday_map = create_germany_ni_holidays(
-        range(start_date.year - 1, end_date.year + 2)
+    years = range(start_date.year - 1, end_date.year + 2)
+    holiday_map = (
+        create_germany_ni_holidays(years)
+        if subdivision is None
+        else create_germany_holidays(subdivision, years)
     )
     public_holiday_dates = {pd.Timestamp(day) for day in holiday_map}
     events = [(pd.Timestamp(day), str(name)) for day, name in holiday_map.items()]
@@ -922,7 +1080,10 @@ def _holiday_calendar(start: object, end: object) -> pd.DataFrame:
                 ),
             }
         )
-    return pd.DataFrame(rows)
+    calendar = pd.DataFrame(rows)
+    if subdivision is not None:
+        calendar.insert(0, "subdivision", subdivision)
+    return calendar
 
 
 def _annual_anchor_calendar(start: object, end: object) -> pd.DataFrame:
@@ -997,6 +1158,252 @@ def create_feature_tables(
     con.execute(
         "CREATE OR REPLACE TABLE ml_calendar AS SELECT * FROM ml_calendar_frame"
     )
+    # The store network spans Niedersachsen and Nordrhein-Westfalen, whose public
+    # holidays differ (Fronleichnam and Allerheiligen in NW only, Reformationstag
+    # in NI only). `ml_calendar` above stays on the Niedersachsen calendar because
+    # the history and cross-store aggregate tables it feeds are pooled over stores
+    # and have no Bundesland to key on. The row-level event context below is
+    # per-store, so a store is told about its own holidays — which is what drives
+    # the pre-holiday stock-up features.
+    con.register("ml_store_subdivision_frame", store_subdivisions())
+    con.execute(
+        "CREATE OR REPLACE TABLE ml_store_subdivision AS "
+        "SELECT * FROM ml_store_subdivision_frame"
+    )
+    con.register(
+        "ml_subdivision_calendar_frame",
+        pd.concat(
+            [
+                _holiday_calendar(bounds[0], bounds[1], subdivision=subdivision)
+                for subdivision in HOLIDAY_SUBDIVISIONS
+            ],
+            ignore_index=True,
+        ),
+    )
+    con.execute(
+        "CREATE OR REPLACE TABLE ml_subdivision_calendar AS "
+        "SELECT * FROM ml_subdivision_calendar_frame"
+    )
+    # Store-day temperature anomaly relative to a same-calendar-day normal built
+    # only from dates strictly before the origin, so the feature obeys the same
+    # leakage rule as every historical feature.
+    con.register("ml_store_temperature_frame", _store_daily_temperature())
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE ml_store_temperature AS
+        SELECT
+            MARKT_ID,
+            period::DATE AS period,
+            temperature_c,
+            EXTRACT(DOY FROM period::DATE)::INTEGER AS day_of_year
+        FROM ml_store_temperature_frame
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE ml_store_weather_anomalies AS
+        WITH target_store_days AS (
+            SELECT DISTINCT
+                s.MARKT_ID,
+                o.origin,
+                t.target_period AS period,
+                EXTRACT(DOY FROM t.target_period)::INTEGER AS day_of_year
+            FROM (SELECT DISTINCT MARKT_ID FROM ml_series) AS s
+            CROSS JOIN ml_snapshot_origins AS o
+            CROSS JOIN range({int(design.forecast_horizon_days)})
+                AS target_offset(day_offset)
+            INNER JOIN ml_target_dates AS t
+                ON t.target_period
+                    = (o.origin + target_offset.day_offset * INTERVAL 1 DAY)::DATE
+        ),
+        seasonal_normals AS (
+            SELECT
+                d.MARKT_ID,
+                d.origin,
+                d.period,
+                AVG(h.temperature_c) AS seasonal_normal_c,
+                COUNT(*) AS normal_observations
+            FROM target_store_days AS d
+            INNER JOIN ml_store_temperature AS h
+                ON h.MARKT_ID = d.MARKT_ID
+                AND h.period < d.origin
+                AND LEAST(
+                        ABS(h.day_of_year - d.day_of_year),
+                        365 - ABS(h.day_of_year - d.day_of_year)
+                    ) <= {int(WEATHER_SEASONAL_WINDOW_DAYS)}
+            GROUP BY d.MARKT_ID, d.origin, d.period
+        )
+        SELECT
+            d.MARKT_ID,
+            d.origin,
+            d.period,
+            CASE
+                WHEN n.normal_observations
+                        >= {int(WEATHER_MIN_SEASONAL_OBSERVATIONS)}
+                    THEN current.temperature_c - n.seasonal_normal_c
+            END AS temperature_anomaly_c
+        FROM target_store_days AS d
+        LEFT JOIN seasonal_normals AS n
+            ON n.MARKT_ID = d.MARKT_ID
+            AND n.origin = d.origin
+            AND n.period = d.period
+        LEFT JOIN ml_store_temperature AS current
+            ON current.MARKT_ID = d.MARKT_ID
+            AND current.period = d.period
+        """
+    )
+    # Article-level warm-anomaly sensitivity. Fitting uses a network-mean anomaly
+    # (the network's within-day spatial spread is ~0.5 C, so pooling stores costs
+    # nothing and keeps this cheap), while the exposed feature multiplies the
+    # article's slope by the row's own store-level warm anomaly.
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE ml_network_temperature AS
+        SELECT
+            period,
+            AVG(temperature_c) AS temperature_c,
+            EXTRACT(DOY FROM period)::INTEGER AS day_of_year
+        FROM ml_store_temperature
+        GROUP BY period
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE ml_origin_network_anomaly AS
+        WITH candidate_days AS (
+            SELECT o.origin, t.period, t.temperature_c, t.day_of_year
+            FROM ml_snapshot_origins AS o
+            INNER JOIN ml_network_temperature AS t
+                ON t.period < o.origin
+        ),
+        normals AS (
+            SELECT
+                d.origin,
+                d.period,
+                d.temperature_c,
+                AVG(h.temperature_c) AS seasonal_normal_c,
+                COUNT(*) AS normal_observations
+            FROM candidate_days AS d
+            INNER JOIN ml_network_temperature AS h
+                ON h.period < d.origin
+                AND LEAST(
+                        ABS(h.day_of_year - d.day_of_year),
+                        365 - ABS(h.day_of_year - d.day_of_year)
+                    ) <= {int(WEATHER_SEASONAL_WINDOW_DAYS)}
+            GROUP BY d.origin, d.period, d.temperature_c
+        )
+        SELECT
+            origin,
+            period,
+            GREATEST(temperature_c - seasonal_normal_c, 0) AS warm_anomaly_c
+        FROM normals
+        WHERE normal_observations >= {int(WEATHER_MIN_SEASONAL_OBSERVATIONS)}
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE ml_article_daily_demand AS
+        SELECT
+            ARTIKEL_ID,
+            period,
+            EXTRACT(ISODOW FROM period)::INTEGER AS weekday,
+            AVG(demand) AS kg
+        FROM benchmark_daily_rows
+        WHERE is_active
+        GROUP BY ARTIKEL_ID, period
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE ml_article_temperature_sensitivity AS
+        WITH observations AS (
+            SELECT
+                a.origin,
+                d.ARTIKEL_ID,
+                d.weekday,
+                d.kg,
+                a.warm_anomaly_c AS x
+            FROM ml_origin_network_anomaly AS a
+            INNER JOIN ml_article_daily_demand AS d
+                ON d.period = a.period
+        ),
+        -- Demand is expressed relative to the article's own weekday mean inside
+        -- the same pre-origin window, so weekday structure cannot masquerade as
+        -- a temperature response.
+        weekday_means AS (
+            SELECT origin, ARTIKEL_ID, weekday, AVG(kg) AS weekday_mean
+            FROM observations
+            GROUP BY origin, ARTIKEL_ID, weekday
+        ),
+        relative AS (
+            SELECT
+                o.origin,
+                o.ARTIKEL_ID,
+                o.x,
+                o.kg / NULLIF(w.weekday_mean, 0) AS y
+            FROM observations AS o
+            INNER JOIN weekday_means AS w
+                USING (origin, ARTIKEL_ID, weekday)
+            WHERE w.weekday_mean > 0
+        ),
+        moments AS (
+            SELECT
+                origin,
+                ARTIKEL_ID,
+                COUNT(*) AS n,
+                SUM(x) AS sum_x,
+                SUM(y) AS sum_y,
+                SUM(x * x) AS sum_xx,
+                SUM(x * y) AS sum_xy,
+                SUM(y * y) AS sum_yy
+            FROM relative
+            GROUP BY origin, ARTIKEL_ID
+        ),
+        slopes AS (
+            SELECT
+                origin,
+                ARTIKEL_ID,
+                n,
+                sum_xx - sum_x * sum_x / n AS sxx,
+                sum_yy - sum_y * sum_y / n AS syy,
+                sum_xy - sum_x * sum_y / n AS sxy
+            FROM moments
+            WHERE n >= {int(WEATHER_MIN_SENSITIVITY_DAYS)}
+        ),
+        estimates AS (
+            SELECT
+                origin,
+                ARTIKEL_ID,
+                sxy / sxx AS beta,
+                GREATEST(syy - (sxy * sxy) / sxx, 0) / ((n - 2) * sxx)
+                    AS beta_variance
+            FROM slopes
+            WHERE sxx > 0 AND n > 2
+        ),
+        -- Empirical Bayes: the spread of the fitted slopes is the true spread
+        -- plus sampling noise, so tau^2 = Var(beta) - mean(Var(beta_hat)) and
+        -- each slope keeps the share of its variance that is signal.
+        origin_priors AS (
+            SELECT
+                origin,
+                GREATEST(VAR_SAMP(beta) - AVG(beta_variance), 0) AS tau_squared
+            FROM estimates
+            GROUP BY origin
+        )
+        SELECT
+            e.origin,
+            e.ARTIKEL_ID,
+            e.beta AS article_temperature_slope,  -- kept for diagnostics
+            COALESCE(
+                e.beta * p.tau_squared
+                    / NULLIF(p.tau_squared + e.beta_variance, 0),
+                0
+            ) AS article_temperature_sensitivity
+        FROM estimates AS e
+        INNER JOIN origin_priors AS p USING (origin)
+        """
+    )
+
     con.execute(
         """
         CREATE OR REPLACE TABLE ml_store_closure_features AS
@@ -1238,6 +1645,7 @@ def create_feature_tables(
                 history.feature_date,
                 calendar.calendar_event_key,
                 calendar.calendar_event_closure_block_length,
+                calendar.days_to_nearest_event AS event_day_offset,
                 EXTRACT(ISODOW FROM history.feature_date)::INTEGER AS event_weekday,
                 history.ARTIKEL_ID,
                 history.sourcing_group,
@@ -1255,6 +1663,7 @@ def create_feature_tables(
                 feature_date,
                 calendar_event_key,
                 calendar_event_closure_block_length,
+                event_day_offset,
                 event_weekday,
                 history.ARTIKEL_ID,
                 history.sourcing_group,
@@ -1339,34 +1748,58 @@ def create_feature_tables(
         )
         """
     )
-
     con.execute(
         """
         CREATE OR REPLACE TEMP TABLE ml_active_series_recent_features AS
         SELECT
-            ARTIKEL_ID,
-            MARKT_ID,
-            period AS feature_date,
-            AVG(demand) OVER active_6 AS rolling_6_mean,
-            AVG(demand) OVER active_24 AS rolling_24_mean,
-            AVG((demand > 0)::INTEGER) OVER active_6 AS demand_rate_last_6,
-            AVG((demand > 0)::INTEGER) OVER active_12 AS demand_rate_last_12,
-            AVG((demand > 0)::INTEGER) OVER active_24 AS demand_rate_last_24
-        FROM benchmark_daily_rows
-        WHERE is_active
+            history.ARTIKEL_ID,
+            history.MARKT_ID,
+            history.period AS feature_date,
+            AVG(history.demand) OVER active_6 AS rolling_6_mean,
+            AVG(history.demand) OVER active_24 AS rolling_24_mean,
+            AVG((history.demand > 0)::INTEGER) OVER active_6 AS demand_rate_last_6,
+            AVG((history.demand > 0)::INTEGER) OVER active_12
+                AS demand_rate_last_12,
+            AVG((history.demand > 0)::INTEGER) OVER active_24
+                AS demand_rate_last_24,
+            AVG((calendar.holiday_event_window <> 'none')::INTEGER) OVER active_24
+                AS event_window_share_last_24
+        FROM benchmark_daily_rows AS history
+        INNER JOIN ml_calendar AS calendar ON history.period = calendar.period
+        WHERE history.is_active
         WINDOW
             active_6 AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID
-                ORDER BY period ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+                PARTITION BY history.ARTIKEL_ID, history.MARKT_ID
+                ORDER BY history.period ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
             ),
             active_12 AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID
-                ORDER BY period ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+                PARTITION BY history.ARTIKEL_ID, history.MARKT_ID
+                ORDER BY history.period ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
             ),
             active_24 AS (
-                PARTITION BY ARTIKEL_ID, MARKT_ID
-                ORDER BY period ROWS BETWEEN 23 PRECEDING AND CURRENT ROW
+                PARTITION BY history.ARTIKEL_ID, history.MARKT_ID
+                ORDER BY history.period ROWS BETWEEN 23 PRECEDING AND CURRENT ROW
             )
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE ml_active_series_non_event_features AS
+        -- The trailing window here counts only active rows outside calendar
+        -- event windows, so run-up and post-event echo days cannot inflate it.
+        SELECT
+            history.ARTIKEL_ID,
+            history.MARKT_ID,
+            history.period AS feature_date,
+            AVG(history.demand) OVER non_event_24 AS rolling_24_mean_non_event
+        FROM benchmark_daily_rows AS history
+        INNER JOIN ml_calendar AS calendar ON history.period = calendar.period
+        WHERE history.is_active
+            AND calendar.holiday_event_window = 'none'
+        WINDOW non_event_24 AS (
+            PARTITION BY history.ARTIKEL_ID, history.MARKT_ID
+            ORDER BY history.period ROWS BETWEEN 23 PRECEDING AND CURRENT ROW
+        )
         """
     )
     con.execute(
@@ -1712,12 +2145,23 @@ def create_feature_tables(
                 rates.rolling_24_mean,
                 rates.demand_rate_last_6,
                 rates.demand_rate_last_12,
-                rates.demand_rate_last_24
+                rates.demand_rate_last_24,
+                rates.event_window_share_last_24
             FROM origin_history_base AS h
             ASOF LEFT JOIN ml_active_series_recent_features AS rates
                 ON h.ARTIKEL_ID = rates.ARTIKEL_ID
                 AND h.MARKT_ID = rates.MARKT_ID
                 AND h.origin > rates.feature_date
+        ),
+        origin_history_with_non_event_rates AS (
+            SELECT
+                h.*,
+                non_event.rolling_24_mean_non_event
+            FROM origin_history_with_rates AS h
+            ASOF LEFT JOIN ml_active_series_non_event_features AS non_event
+                ON h.ARTIKEL_ID = non_event.ARTIKEL_ID
+                AND h.MARKT_ID = non_event.MARKT_ID
+                AND h.origin > non_event.feature_date
         ),
         origin_history_with_gaps AS (
             SELECT
@@ -1725,7 +2169,7 @@ def create_feature_tables(
                 g.completed_gap_count,
                 g.historical_gap_p90,
                 g.historical_max_gap
-            FROM origin_history_with_rates AS h
+            FROM origin_history_with_non_event_rates AS h
             ASOF LEFT JOIN ml_gap_statistics AS g
                 ON h.ARTIKEL_ID = g.ARTIKEL_ID
                 AND h.MARKT_ID = g.MARKT_ID
@@ -1776,12 +2220,15 @@ def create_feature_tables(
                 ON h.MARKT_ID = x.MARKT_ID
                 AND h.category_id = x.category_id
                 AND h.origin > x.feature_date
+        ),
+        origin_history_with_group_action AS (
+            SELECT h.*, a.mean_action_lift_in_sourcing_group
+            FROM origin_history_with_store_category AS h
+            ASOF LEFT JOIN ml_sourcing_group_action_features AS a
+                ON h.sourcing_group = a.sourcing_group
+                AND h.origin > a.feature_date
         )
-        SELECT h.*, a.mean_action_lift_in_sourcing_group
-        FROM origin_history_with_store_category AS h
-        ASOF LEFT JOIN ml_sourcing_group_action_features AS a
-            ON h.sourcing_group = a.sourcing_group
-            AND h.origin > a.feature_date
+        SELECT * FROM origin_history_with_group_action
         """
     )
     con.execute(
@@ -1858,7 +2305,8 @@ def create_feature_tables(
                 probe.origin,
                 probe.target_period,
                 calendar.calendar_event_key,
-                calendar.calendar_event_closure_block_length
+                calendar.calendar_event_closure_block_length,
+                calendar.days_to_nearest_event AS event_day_offset
             FROM probe
             INNER JOIN ml_calendar AS calendar
                 ON probe.target_period = calendar.period
@@ -1877,6 +2325,7 @@ def create_feature_tables(
                 cells.calendar_event_key,
                 cells.calendar_event_closure_block_length,
                 pooled.feature_date,
+                pooled.event_day_offset,
                 pooled.event_weekday,
                 pooled.ARTIKEL_ID,
                 pooled.sourcing_group,
@@ -1946,6 +2395,7 @@ def create_feature_tables(
                 origin,
                 calendar_event_key,
                 calendar_event_closure_block_length,
+                event_day_offset,
                 feature_date,
                 event_observation_count,
                 CASE WHEN baseline_occurrence_rate > 0
@@ -1980,6 +2430,26 @@ def create_feature_tables(
                 calendar_event_key,
                 calendar_event_closure_block_length
         ),
+        position_components AS (
+            SELECT
+                origin,
+                calendar_event_key,
+                calendar_event_closure_block_length,
+                event_day_offset,
+                COUNT(DISTINCT feature_date)::INTEGER AS date_count,
+                SUM(occurrence_numerator)::DOUBLE
+                    / NULLIF(SUM(occurrence_denominator), 0)
+                    AS occurrence_lift,
+                SUM(quantity_numerator)
+                    / NULLIF(SUM(quantity_denominator), 0)
+                    AS quantity_lift
+            FROM contributions
+            GROUP BY
+                origin,
+                calendar_event_key,
+                calendar_event_closure_block_length,
+                event_day_offset
+        ),
         selected AS (
             SELECT
                 probe.origin,
@@ -1993,13 +2463,50 @@ def create_feature_tables(
                 CASE
                     WHEN cell.date_count >= {EVENT_MIN_POOLED_CELL_DATES}
                     THEN cell.quantity_lift
-                END AS event_lift_pooled_quantity
+                END AS event_lift_pooled_quantity,
+                position.date_count AS event_position_lift_cell_date_count,
+                CASE
+                    WHEN position.occurrence_lift IS NOT NULL
+                        AND cell.date_count >= {EVENT_MIN_POOLED_CELL_DATES}
+                        AND cell.occurrence_lift IS NOT NULL
+                    THEN (
+                        position.date_count * position.occurrence_lift
+                        + {EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT}
+                            * cell.occurrence_lift
+                    ) / (
+                        position.date_count
+                        + {EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT}
+                    )
+                    WHEN position.date_count >= {EVENT_MIN_POSITION_CELL_DATES}
+                    THEN position.occurrence_lift
+                END AS event_position_lift_occurrence,
+                CASE
+                    WHEN position.quantity_lift IS NOT NULL
+                        AND cell.date_count >= {EVENT_MIN_POOLED_CELL_DATES}
+                        AND cell.quantity_lift IS NOT NULL
+                    THEN (
+                        position.date_count * position.quantity_lift
+                        + {EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT}
+                            * cell.quantity_lift
+                    ) / (
+                        position.date_count
+                        + {EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT}
+                    )
+                    WHEN position.date_count >= {EVENT_MIN_POSITION_CELL_DATES}
+                    THEN position.quantity_lift
+                END AS event_position_lift_quantity
             FROM event_probe AS probe
             LEFT JOIN cell_components AS cell
                 ON probe.origin = cell.origin
                 AND probe.calendar_event_key = cell.calendar_event_key
                 AND probe.calendar_event_closure_block_length
                     = cell.calendar_event_closure_block_length
+            LEFT JOIN position_components AS position
+                ON probe.origin = position.origin
+                AND probe.calendar_event_key = position.calendar_event_key
+                AND probe.calendar_event_closure_block_length
+                    = position.calendar_event_closure_block_length
+                AND probe.event_day_offset = position.event_day_offset
         )
         SELECT
             origin,
@@ -2009,7 +2516,12 @@ def create_feature_tables(
             event_lift_pooled_occurrence,
             event_lift_pooled_quantity,
             event_lift_pooled_occurrence * event_lift_pooled_quantity
-                AS event_lift_pooled_total
+                AS event_lift_pooled_total,
+            event_position_lift_cell_date_count,
+            event_position_lift_occurrence,
+            event_position_lift_quantity,
+            event_position_lift_occurrence * event_position_lift_quantity
+                AS event_position_lift_total
         FROM selected
         """
     )
@@ -2048,6 +2560,7 @@ def create_feature_tables(
     )
     for resolved_table in (
         "ml_active_series_recent_features",
+        "ml_active_series_non_event_features",
         "ml_active_series_event_history",
         "ml_pooled_event_statistics",
         "ml_pooled_article_baseline_statistics",
@@ -2167,7 +2680,10 @@ def _feature_query_statement(
                 e.event_lift_series,
                 pooled.event_lift_pooled_occurrence,
                 pooled.event_lift_pooled_quantity,
-                pooled.event_lift_pooled_total
+                pooled.event_lift_pooled_total,
+                pooled.event_position_lift_occurrence,
+                pooled.event_position_lift_quantity,
+                pooled.event_position_lift_total
             FROM targets AS t
             LEFT JOIN ml_series_annual_features AS a
                 ON t.ARTIKEL_ID = a.ARTIKEL_ID
@@ -2250,6 +2766,8 @@ def _feature_query_statement(
             p.same_weekday_lag_14,
             p.rolling_6_mean,
             p.rolling_24_mean,
+            p.rolling_24_mean_non_event,
+            p.event_window_share_last_24,
             p.rolling_28_demand_rate,
             p.same_weekday_mean_4,
             p.same_weekday_mean_8,
@@ -2261,6 +2779,9 @@ def _feature_query_statement(
             p.event_lift_pooled_occurrence,
             p.event_lift_pooled_quantity,
             p.event_lift_pooled_total,
+            p.event_position_lift_occurrence,
+            p.event_position_lift_quantity,
+            p.event_position_lift_total,
             p.ADI,
             p.CV2,
             p.product_cross_store_mean_28,
@@ -2268,6 +2789,10 @@ def _feature_query_statement(
                 / NULLIF(p.product_cross_store_open_mean_48, 0)
                 AS product_weekday_profile_value,
             p.store_category_mean_28,
+            w.temperature_anomaly_c,
+            COALESCE(sensitivity.article_temperature_sensitivity, 0)
+                * GREATEST(w.temperature_anomaly_c, 0)
+                AS temperature_expected_lift,
             p.rolling_28_demand_rate AS recent_occurrence_rate,
             p.calendar_days_since_last_demand,
             h.seasonal_mase_scale,
@@ -2281,7 +2806,18 @@ def _feature_query_statement(
                 ELSE 1.0
             END AS target_mean
         FROM with_product_weekday AS p
-        INNER JOIN ml_calendar AS c USING (period)
+        LEFT JOIN ml_store_subdivision AS store_state
+            ON p.MARKT_ID = store_state.MARKT_ID
+        INNER JOIN ml_subdivision_calendar AS c
+            ON c.period = p.period
+            AND c.subdivision = COALESCE(store_state.subdivision, 'NI')
+        LEFT JOIN ml_store_weather_anomalies AS w
+            ON p.MARKT_ID = w.MARKT_ID
+            AND p.origin = w.origin
+            AND p.period = w.period
+        LEFT JOIN ml_article_temperature_sensitivity AS sensitivity
+            ON p.ARTIKEL_ID = sensitivity.ARTIKEL_ID
+            AND p.origin = sensitivity.origin
         LEFT JOIN ml_origin_history_scale AS h
             ON p.ARTIKEL_ID = h.ARTIKEL_ID
             AND p.MARKT_ID = h.MARKT_ID

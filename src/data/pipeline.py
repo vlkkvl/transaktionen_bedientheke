@@ -30,6 +30,10 @@ from src.data.preparation import (
 
 RAW_TRANSACTIONS_DIR = ROOT / "data" / "raw" / "transactions"
 YEARLY_PARQUET_DIR = ROOT / "data" / "interim" / "transactions_per_year"
+# Final output of the state-aware pipeline. The pre-existing
+# "data/processed/transactions" was built with a Niedersachsen-only holiday
+# calendar and is preserved as the comparison baseline.
+PROCESSED_FIXED_DIR = ROOT / "data" / "processed" / "transactions_fixed"
 
 
 def raw_files_by_type() -> dict[str, list[Path]]:
@@ -159,8 +163,16 @@ def main() -> None:
             remove_stale_series.main,
         ),
 
-        # rececives "data" / "interim" / "transactions_dst_daily_no_outliers_no_stale", writes "data" / "processed" / "transactions"
-        ("Remove daily outliers", remove_outliers.main), # it cappes the Rabbate to q95
+        # receives "data" / "interim" / "transactions_dst_daily_no_outliers_no_stale",
+        # writes "data" / "processed" / "transactions_fixed".
+        # The output directory is deliberately NOT the original
+        # "data/processed/transactions": that copy was produced with a
+        # Niedersachsen-only holiday calendar applied to every store, and is kept
+        # untouched so the two datasets can be fitted and compared in 07_01.
+        (
+            "Remove daily outliers",
+            lambda: remove_outliers.main(out_dir=PROCESSED_FIXED_DIR),
+        ),  # it cappes the Rabbate to q95
 
         # ("Aggregate active weeks", distribute_sales_over_active_weeks.main),
         # ("Aggregate active months", distribute_sales_over_active_months.main),

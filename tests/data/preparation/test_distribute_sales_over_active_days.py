@@ -7,7 +7,7 @@ import pandas as pd
 
 from src.data.preparation.distribute_sales_over_active_days import (
     STATIC_COLS,
-    build_calendar,
+    build_state_calendar,
     output_select_sql,
 )
 
@@ -15,7 +15,7 @@ from src.data.preparation.distribute_sales_over_active_days import (
 class CompleteCalendarTest(unittest.TestCase):
     def test_output_retains_sundays_and_holidays_with_closure_flags(self) -> None:
         con = duckdb.connect()
-        calendar = build_calendar(
+        calendar = build_state_calendar(
             pd.Timestamp("2025-12-20"), pd.Timestamp("2025-12-25")
         )
         con.register("calendar_frame", calendar)
@@ -26,7 +26,7 @@ class CompleteCalendarTest(unittest.TestCase):
         )
         con.execute(
             f"""
-            CREATE TEMP TABLE series AS
+            CREATE TEMP TABLE series_state AS
             SELECT * FROM (
                 VALUES
                     (1, 1, DATE '2025-12-20', DATE '2025-12-25'),
@@ -34,7 +34,8 @@ class CompleteCalendarTest(unittest.TestCase):
                         DATE '2025-12-20', DATE '2025-12-25')
             ) AS v(ARTIKEL_ID, MARKT_ID, START_DATE, END_DATE)
             CROSS JOIN (
-                SELECT TRUE AS is_fcm, FALSE AS is_pseudo, {static_projection}
+                SELECT TRUE AS is_fcm, FALSE AS is_pseudo, 'NI' AS subdivision,
+                       {static_projection}
             )
             """
         )

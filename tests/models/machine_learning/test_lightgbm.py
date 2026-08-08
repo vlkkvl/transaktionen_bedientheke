@@ -39,6 +39,8 @@ from src.models.lightgbm.base import BaseLightGBMModel
 from src.models.lightgbm.features.builder import (
     EVENT_MIN_ARTICLE_BASELINE_OBSERVATIONS,
     EVENT_MIN_POOLED_CELL_DATES,
+    EVENT_MIN_POSITION_CELL_DATES,
+    EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT,
     _annual_anchor_calendar,
     _holiday_calendar,
     anchor_date,
@@ -582,6 +584,186 @@ class GlobalLightGBMTest(unittest.TestCase):
         self.assertTrue(all(window != "none" for (window,) in contexts))
         self.assertEqual(row.same_weekday_mean_4, 10.0)
         self.assertEqual(row.same_weekday_mean_8, 10.0)
+
+    def test_non_event_rolling_mean_excludes_event_window_demand(self) -> None:
+        origin = pd.Timestamp("2025-01-06")
+        self.con.execute(
+            """
+            UPDATE benchmark_daily_rows
+            SET demand = 5.0, is_active = TRUE, reason_closed = NULL
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10 AND period < ?
+            """,
+            [origin.date()],
+        )
+        create_feature_tables(self.con, origins=[origin], design=self.design)
+        event_dates = [
+            row[0]
+            for row in self.con.execute(
+                """
+                SELECT period FROM ml_calendar
+                WHERE holiday_event_window <> 'none' AND period < ?
+                """,
+                [origin.date()],
+            ).fetchall()
+        ]
+        self.con.execute(
+            f"""
+            UPDATE benchmark_daily_rows
+            SET demand = 999.0
+            WHERE ARTIKEL_ID = 1 AND MARKT_ID = 10
+                AND period IN ({", ".join("?" for _ in event_dates)})
+            """,
+            event_dates,
+        )
+
+        create_feature_tables(self.con, origins=[origin], design=self.design)
+        frame = make_feature_frame(self.con, [origin], self.design)
+        row = frame.loc[
+            frame.ARTIKEL_ID.eq(1)
+            & frame.MARKT_ID.eq(10)
+            & frame.period.eq(origin)
+        ].iloc[0]
+
+        # Christmas and New Year windows sit inside the trailing 24 rows, so
+        # the contaminated mean is inflated while the non-event mean is not.
+        self.assertGreater(row.rolling_24_mean, 5.0)
+        self.assertEqual(row.rolling_24_mean_non_event, 5.0)
+        self.assertGreater(row.event_window_share_last_24, 0.0)
+        self.assertLess(row.event_window_share_last_24, 1.0)
+
+    def test_temperature_anomaly_uses_only_pre_origin_seasonal_normal(self) -> None:
+        origin = pd.Timestamp("2025-01-06")
+        dates = pd.date_range("2024-01-01", periods=600, freq="D")
+        # Market 10 is 10 C on every pre-origin date and 30 C from the origin
+        # onwards. The seasonal normal may only see the pre-origin dates, so the
+        # anomaly on the origin day must be exactly 30 - 10 = 20. Any leakage of
+        # the horizon's own 30 C readings into the normal would shrink it.
+        market_10 = pd.DataFrame({
+            "MARKT_ID": 10,
+            "period": [date.date() for date in dates],
+            "temperature_c": [
+                10.0 if date < origin else 30.0 for date in dates
+            ],
+        })
+        # Market 11 has too few historical dates near this day-of-year to form a
+        # normal, so its anomaly must stay null rather than fall back to a
+        # different store or a global mean.
+        sparse_dates = pd.date_range("2025-01-01", periods=3, freq="D")
+        market_11 = pd.DataFrame({
+            "MARKT_ID": 11,
+            "period": [date.date() for date in sparse_dates.append(
+                pd.DatetimeIndex([origin])
+            )],
+            "temperature_c": [10.0, 10.0, 10.0, 30.0],
+        })
+        synthetic = pd.concat([market_10, market_11], ignore_index=True)
+
+        with patch(
+            "src.models.lightgbm.features.builder._store_daily_temperature",
+            return_value=synthetic,
+        ):
+            create_feature_tables(self.con, origins=[origin], design=self.design)
+            frame = make_feature_frame(self.con, [origin], self.design)
+
+        warm_row = frame.loc[
+            frame.MARKT_ID.eq(10) & frame.period.eq(origin)
+        ].iloc[0]
+        self.assertAlmostEqual(warm_row.temperature_anomaly_c, 20.0, places=6)
+
+        sparse_row = frame.loc[
+            frame.MARKT_ID.eq(11) & frame.period.eq(origin)
+        ].iloc[0]
+        self.assertTrue(pd.isna(sparse_row.temperature_anomaly_c))
+
+    def test_temperature_expected_lift_is_zero_on_cold_and_signed_on_warm(
+        self,
+    ) -> None:
+        origin = pd.Timestamp("2025-01-06")
+        dates = pd.date_range("2024-01-01", periods=600, freq="D")
+        # Temperature alternates around a flat normal, so half the history is a
+        # warm anomaly and half is cold.
+        temperatures = [
+            10.0 + (5.0 if index % 2 == 0 else -5.0)
+            for index, _ in enumerate(dates)
+        ]
+        synthetic = pd.concat([
+            pd.DataFrame({
+                "MARKT_ID": market,
+                "period": [date.date() for date in dates],
+                "temperature_c": temperatures,
+            })
+            for market in (10, 11)
+        ], ignore_index=True)
+        # Article 1 sells more on warm days; article 2 is indifferent.
+        self.con.execute(
+            """
+            UPDATE benchmark_daily_rows
+            SET demand = CASE
+                WHEN ARTIKEL_ID = 1 AND EXTRACT(DAY FROM period)::INTEGER % 2 = 1
+                    THEN 20.0
+                WHEN ARTIKEL_ID = 1 THEN 4.0
+                ELSE 6.0
+            END
+            """
+        )
+
+        with patch(
+            "src.models.lightgbm.features.builder._store_daily_temperature",
+            return_value=synthetic,
+        ):
+            create_feature_tables(self.con, origins=[origin], design=self.design)
+            frame = make_feature_frame(self.con, [origin], self.design)
+
+        self.assertIn("temperature_expected_lift", frame.columns)
+        # Never negative and never nonzero on a day at or below the normal.
+        cold = frame.loc[frame.temperature_anomaly_c <= 0]
+        self.assertTrue((cold.temperature_expected_lift == 0).all())
+        self.assertTrue((frame.temperature_expected_lift >= 0).all())
+
+        estimates = self.con.execute(
+            """
+            SELECT
+                ARTIKEL_ID,
+                article_temperature_slope,
+                article_temperature_sensitivity
+            FROM ml_article_temperature_sensitivity
+            ORDER BY ARTIKEL_ID
+            """
+        ).fetchdf().set_index("ARTIKEL_ID")
+
+        # The warm-responsive article must carry the larger raw slope, and the
+        # indifferent one must sit at zero.
+        self.assertGreater(
+            estimates.article_temperature_slope.loc[1],
+            estimates.article_temperature_slope.loc[2],
+        )
+        self.assertAlmostEqual(
+            estimates.article_temperature_slope.loc[2], 0.0, places=6
+        )
+        # Shrinkage never flips a sign, never inflates, and is never null.
+        self.assertTrue(estimates.article_temperature_sensitivity.notna().all())
+        self.assertTrue(
+            (
+                estimates.article_temperature_sensitivity.abs()
+                <= estimates.article_temperature_slope.abs() + 1e-9
+            ).all()
+        )
+
+    def test_temperature_anomaly_is_null_without_weather_data(self) -> None:
+        origin = pd.Timestamp("2025-01-06")
+        empty = pd.DataFrame(
+            columns=["MARKT_ID", "period", "temperature_c"]
+        ).astype({"MARKT_ID": "int64", "temperature_c": "float64"})
+
+        with patch(
+            "src.models.lightgbm.features.builder._store_daily_temperature",
+            return_value=empty,
+        ):
+            create_feature_tables(self.con, origins=[origin], design=self.design)
+            frame = make_feature_frame(self.con, [origin], self.design)
+
+        self.assertIn("temperature_anomaly_c", frame.columns)
+        self.assertTrue(frame.temperature_anomaly_c.isna().all())
 
     def test_product_weekday_profile_uses_open_non_event_cross_store_means(
         self,
@@ -1271,6 +1453,81 @@ class GlobalLightGBMTest(unittest.TestCase):
         self.assertTrue(pfingst_context.notna().all().all())
         self.assertTrue(pfingst_context.nunique().eq(1).all())
 
+    def test_position_lift_shrinks_toward_window_lift(self) -> None:
+        # Post-event offsets are used because every fixture series sells on a
+        # fixed weekday, which leaves pre-Pfingstmontag weekdays without a
+        # positive baseline in this synthetic data. The fixture holds exactly
+        # one historical Pfingstmontag, so every position cell has one date.
+        origin = pd.Timestamp("2025-06-09")
+        _create_assessed_origins(self.con, pd.DatetimeIndex([origin]), self.design)
+
+        def window_frame():
+            frame = make_feature_frame(self.con, [origin], self.design)
+            return frame.loc[
+                frame.ARTIKEL_ID.eq(1)
+                & frame.MARKT_ID.eq(10)
+                & frame.period.between("2025-06-10", "2025-06-12")
+            ].set_index("period")
+
+        # A zero prior weight exposes the raw single-date position estimate.
+        with patch(
+            "src.models.lightgbm.features.builder."
+            "EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT",
+            0,
+        ):
+            create_feature_tables(self.con, origins=[origin], design=self.design)
+        raw_rows = window_frame()
+        date_counts = self.con.execute(
+            """
+            SELECT DISTINCT event_position_lift_cell_date_count
+            FROM ml_origin_event_lifts
+            WHERE origin = ? AND target_period BETWEEN ? AND ?
+            """,
+            [origin.date(), "2025-06-10", "2025-06-12"],
+        ).fetchall()
+        self.assertEqual({row[0] for row in date_counts}, {1})
+        self.assertTrue(
+            raw_rows[
+                ["event_position_lift_occurrence", "event_position_lift_quantity"]
+            ].notna().all().all()
+        )
+
+        # The default prior weight of one blends the single-date position
+        # estimate equally with the gated window-level lift.
+        self.assertEqual(EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT, 1)
+        create_feature_tables(self.con, origins=[origin], design=self.design)
+        shrunk_rows = window_frame()
+        pd.testing.assert_frame_equal(
+            shrunk_rows[
+                [
+                    "event_lift_pooled_occurrence",
+                    "event_lift_pooled_quantity",
+                    "event_lift_pooled_total",
+                ]
+            ],
+            raw_rows[
+                [
+                    "event_lift_pooled_occurrence",
+                    "event_lift_pooled_quantity",
+                    "event_lift_pooled_total",
+                ]
+            ],
+        )
+        for component in ("occurrence", "quantity"):
+            np.testing.assert_allclose(
+                shrunk_rows[f"event_position_lift_{component}"],
+                (
+                    raw_rows[f"event_position_lift_{component}"]
+                    + raw_rows[f"event_lift_pooled_{component}"]
+                )
+                / 2.0,
+            )
+        np.testing.assert_allclose(
+            shrunk_rows["event_position_lift_total"],
+            shrunk_rows["event_position_lift_occurrence"]
+            * shrunk_rows["event_position_lift_quantity"],
+        )
+
     def test_annual_candidates_must_match_target_event_context(self) -> None:
         origin = pd.Timestamp("2025-04-14")
         target = pd.Timestamp("2025-04-15")
@@ -1653,6 +1910,8 @@ class GlobalLightGBMTest(unittest.TestCase):
                 not in {
                     "event_lift_pooled_quantity",
                     "event_lift_pooled_total",
+                    "event_position_lift_quantity",
+                    "event_position_lift_total",
                 }
             ),
         )
@@ -1665,16 +1924,86 @@ class GlobalLightGBMTest(unittest.TestCase):
                 not in {
                     "event_lift_pooled_occurrence",
                     "event_lift_pooled_total",
+                    "event_position_lift_occurrence",
+                    "event_position_lift_total",
                 }
             ),
         )
         self.assertEqual(
             set(OCCURRENCE_FEATURE_COLUMNS)
-            - {"event_lift_pooled_occurrence"},
+            - {
+                "event_lift_pooled_occurrence",
+                "event_position_lift_occurrence",
+            },
             set(QUANTITY_FEATURE_COLUMNS)
-            - {"event_lift_pooled_quantity"},
+            - {
+                "event_lift_pooled_quantity",
+                "event_position_lift_quantity",
+            },
         )
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StateAwareCalendarTest(unittest.TestCase):
+    """A store must be told about its own Bundesland's public holidays."""
+
+    def setUp(self) -> None:
+        self.con = duckdb.connect()
+        self.addCleanup(self.con.close)
+        self.con.execute(
+            """
+            CREATE TEMP TABLE benchmark_daily_rows (
+                ARTIKEL_ID BIGINT, MARKT_ID BIGINT, period DATE, demand DOUBLE,
+                is_active BOOLEAN, reason_closed VARCHAR, action_flag TINYINT,
+                sourcing_group VARCHAR, category_id INTEGER
+            )
+            """
+        )
+        dates = pd.date_range("2024-01-01", periods=400, freq="D")
+        rows = [
+            (1, market, date.date(), 1.0, True, None, 0, "FCM", 890)
+            for market in (10, 11)
+            for date in dates
+        ]
+        self.con.executemany(
+            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        # Market 10 sits in Niedersachsen, market 11 in Nordrhein-Westfalen.
+        self.subdivisions = pd.DataFrame(
+            {"MARKT_ID": [10, 11], "subdivision": ["NI", "NW"]}
+        )
+        self.design = BenchmarkDesign(61, pd.Timestamp("2024-05-27"), 7, 7)
+        create_history_features(self.con)
+        _create_assessed_origins(
+            self.con, pd.DatetimeIndex([self.design.first_origin]), self.design
+        )
+
+    def test_fronleichnam_is_a_holiday_for_the_nw_store_only(self) -> None:
+        origin = pd.Timestamp("2024-05-27")
+        with patch(
+            "src.models.lightgbm.features.builder.store_subdivisions",
+            return_value=self.subdivisions,
+        ):
+            create_feature_tables(self.con, origins=[origin], design=self.design)
+            frame = make_feature_frame(self.con, [origin], self.design)
+
+        fronleichnam = frame.loc[frame.period.eq(pd.Timestamp("2024-05-30"))]
+        by_market = fronleichnam.set_index("MARKT_ID")
+
+        self.assertFalse(bool(by_market.loc[10, "is_public_holiday"]))
+        self.assertTrue(bool(by_market.loc[11, "is_public_holiday"]))
+        self.assertEqual(by_market.loc[11, "event_name"], "Fronleichnam")
+        self.assertEqual(by_market.loc[11, "holiday_event_window"], "holiday")
+        # The NW store must also see the run-up, which is what the stock-up
+        # features key on; the NI store must not.
+        run_up = frame.loc[frame.period.eq(pd.Timestamp("2024-05-29"))].set_index(
+            "MARKT_ID"
+        )
+        self.assertEqual(run_up.loc[11, "holiday_event_window"], "before_holiday_1_3d")
+        self.assertNotEqual(
+            run_up.loc[10, "holiday_event_window"], "before_holiday_1_3d"
+        )

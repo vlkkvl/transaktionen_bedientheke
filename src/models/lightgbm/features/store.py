@@ -26,7 +26,7 @@ from src.models.lightgbm.features.builder import (
 
 FEATURE_SET_NAME = "lightgbm_daily"
 FEATURE_SET_VERSION = "1"
-FEATURE_BUILDER_VERSION = "2026-08-06.18"
+FEATURE_BUILDER_VERSION = "2026-08-07.4"
 DEFAULT_FEATURE_STORE_DIR = ROOT / "data" / "processed" / "model_features"
 
 

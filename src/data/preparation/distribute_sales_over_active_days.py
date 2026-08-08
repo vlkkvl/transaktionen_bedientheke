@@ -12,6 +12,7 @@ row in their series.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 import sys
 from time import perf_counter
@@ -51,7 +52,45 @@ OUTPUT_COLS = KEY_COLS + CALENDAR_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STAT
 INPUT_COLS = KEY_COLS + SUM_COLS + TYPE_COLS + FLAG_COLS + STATIC_COLS
 
 HOLIDAY_COUNTRY = "DE"
-HOLIDAY_SUBDIVISION = "NI"  # Niedersachsen
+HOLIDAY_SUBDIVISION = "NI"  # Niedersachsen — retained as the default only
+
+# The store network spans two Bundeslaender, and their public-holiday calendars
+# differ. Applying the Niedersachsen calendar to every store corrupts the data in
+# both directions: on NW-only holidays (Fronleichnam, Allerheiligen) the NW stores
+# are shut but marked active, and on NI-only holidays (Reformationstag) the NW
+# stores are open but forced inactive, which zeroes their real sales. Measured on
+# the 2026 evaluation window, the single Fronleichnam misclassification cost
+# 0.241 pp of row WAPE; the Reformationstag one destroys ~110 real store-days a
+# year for 57 stores whose median daily volume is 54 kg.
+MARKET_PATH = ROOT / "data" / "raw" / "maerkte" / "maerkte.csv"
+HOLIDAY_SUBDIVISIONS = ("NI", "NW")
+# Two-digit postal prefixes that fall in Nordrhein-Westfalen.
+NW_PLZ_PREFIXES = frozenset({32, 33, 48, 57, 59})
+# Border municipalities whose prefix contradicts their Bundesland. Each was
+# cross-checked against observed store closures on NW-only holidays.
+PLZ_SUBDIVISION_OVERRIDES = {
+    48499: "NI",  # Salzbergen, Emsland
+    48488: "NI",  # Emsbueren, Emsland
+    49469: "NW",  # Ibbenbueren, Kreis Steinfurt
+}
+
+
+def subdivision_for_postal_code(postal_code: object) -> str:
+    """Return the Bundesland subdivision code for a German postal code."""
+    code = int(postal_code)
+    override = PLZ_SUBDIVISION_OVERRIDES.get(code)
+    if override is not None:
+        return override
+    return "NW" if code // 1000 in NW_PLZ_PREFIXES else "NI"
+
+
+def store_subdivisions(market_path: Path = MARKET_PATH) -> pd.DataFrame:
+    """Return one Bundesland subdivision code per store."""
+    markets = pd.read_csv(market_path, usecols=["MARKT_ID", "PLZ"]).dropna(
+        subset=["PLZ"]
+    )
+    markets["subdivision"] = markets["PLZ"].map(subdivision_for_postal_code)
+    return markets[["MARKT_ID", "subdivision"]].drop_duplicates("MARKT_ID")
 
 
 def create_germany_ni_holidays(years: range):
@@ -63,6 +102,15 @@ def create_germany_ni_holidays(years: range):
             years=years,
         )
     return holidays.Germany(subdiv=HOLIDAY_SUBDIVISION, years=years)
+
+
+def create_germany_holidays(subdivision: str, years: range):
+    """Create the German public-holiday calendar of one Bundesland."""
+    if hasattr(holidays, "country_holidays"):
+        return holidays.country_holidays(
+            HOLIDAY_COUNTRY, subdiv=subdivision, years=years
+        )
+    return holidays.Germany(subdiv=subdivision, years=years)
 
 
 def build_calendar(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
@@ -77,6 +125,27 @@ def build_calendar(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataF
     calendar["YEAR"] = calendar["DATE_D"].dt.year
     calendar["DATE_D"] = calendar["DATE_D"].dt.date
     return calendar
+
+
+def build_state_calendar(
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    subdivisions: Iterable[str] = HOLIDAY_SUBDIVISIONS,
+) -> pd.DataFrame:
+    """Return one Sunday/holiday calendar per Bundesland subdivision."""
+    all_dates = pd.date_range(start_date, end_date, freq="D")
+    years = range(start_date.year, end_date.year + 1)
+    frames = []
+    for subdivision in subdivisions:
+        holiday_dates = set(create_germany_holidays(subdivision, years).keys())
+        calendar = pd.DataFrame({"DATE_D": all_dates})
+        calendar["subdivision"] = subdivision
+        calendar["IS_SUNDAY"] = calendar["DATE_D"].dt.dayofweek == 6
+        calendar["IS_HOLIDAY"] = calendar["DATE_D"].dt.date.isin(holiday_dates)
+        calendar["YEAR"] = calendar["DATE_D"].dt.year
+        calendar["DATE_D"] = calendar["DATE_D"].dt.date
+        frames.append(calendar)
+    return pd.concat(frames, ignore_index=True)
 
 
 def create_source_view(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
@@ -145,6 +214,14 @@ def create_series_table(
         HAVING START_DATE IS NOT NULL
         """
     )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE series_state AS
+        SELECT s.*, COALESCE(m.subdivision, 'NI') AS subdivision
+        FROM series AS s
+        LEFT JOIN store_subdivision AS m USING (MARKT_ID)
+        """
+    )
 
 
 def output_select_sql(year: int) -> str:
@@ -181,9 +258,10 @@ def output_select_sql(year: int) -> str:
             CASE WHEN is_active THEN COALESCE(src.ARTIKELRABATT, 0) ELSE 0 END
                 ::TINYINT AS ARTIKELRABATT,
             {static_cols}
-        FROM series s
+        FROM series_state s
         JOIN calendar c
-            ON c.DATE_D BETWEEN s.START_DATE AND s.END_DATE
+            ON c.subdivision = s.subdivision
+            AND c.DATE_D BETWEEN s.START_DATE AND s.END_DATE
         LEFT JOIN source src
             ON src.ARTIKEL_ID = s.ARTIKEL_ID
             AND src.MARKT_ID = s.MARKT_ID
@@ -235,11 +313,22 @@ def main(in_dir: Path = IN_DIR, out_dir: Path = OUT_DIR) -> None:
     if min_date is None or max_date is None:
         raise ValueError("Input parquet files do not contain any rows")
 
-    calendar = build_calendar(pd.Timestamp(min_date), pd.Timestamp(max_date))
+    subdivisions = store_subdivisions()
+    con.register("store_subdivision_df", subdivisions)
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE store_subdivision AS "
+        "SELECT * FROM store_subdivision_df"
+    )
+    calendar = build_state_calendar(pd.Timestamp(min_date), pd.Timestamp(max_date))
     con.register("calendar_df", calendar)
     con.execute("CREATE OR REPLACE TEMP TABLE calendar AS SELECT * FROM calendar_df")
     years = sorted(calendar["YEAR"].unique().tolist())
-    t0 = step(f"Created Niedersachsen calendar for {len(years)} years", t0)
+    counts = subdivisions.subdivision.value_counts().to_dict()
+    t0 = step(
+        f"Created per-Bundesland calendars for {len(years)} years "
+        f"({', '.join(f'{k}: {v} stores' for k, v in sorted(counts.items()))})",
+        t0,
+    )
 
     create_series_table(con, max_date)
     series_count = con.execute("SELECT COUNT(*) FROM series").fetchone()[0]

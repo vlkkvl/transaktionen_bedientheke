@@ -41,6 +41,8 @@ OCCURRENCE_FEATURE_COLUMNS = tuple(
     not in {
         "event_lift_pooled_quantity",
         "event_lift_pooled_total",
+        "event_position_lift_quantity",
+        "event_position_lift_total",
     }
 )
 QUANTITY_FEATURE_COLUMNS = tuple(
@@ -50,6 +52,8 @@ QUANTITY_FEATURE_COLUMNS = tuple(
     not in {
         "event_lift_pooled_occurrence",
         "event_lift_pooled_total",
+        "event_position_lift_occurrence",
+        "event_position_lift_total",
     }
 )
 
@@ -165,6 +169,8 @@ def _fit_origin(
         not in {
             "event_lift_pooled_quantity",
             "event_lift_pooled_total",
+            "event_position_lift_quantity",
+            "event_position_lift_total",
         }
     )
     quantity_features = tuple(
@@ -174,6 +180,8 @@ def _fit_origin(
         not in {
             "event_lift_pooled_occurrence",
             "event_lift_pooled_total",
+            "event_position_lift_occurrence",
+            "event_position_lift_total",
         }
     )
     (
