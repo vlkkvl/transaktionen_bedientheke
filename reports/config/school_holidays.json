@@ -1,0 +1,477 @@
+{
+  "source": "https://openholidaysapi.org (SchoolHolidays, countryIsoCode=DE)",
+  "source_note": "Official school-holiday periods published by the German Laender via the OpenHolidays API. Retrieved once and committed so feature building needs no network access; refresh with 'python -m src.data.preparation.calendar_days --refresh'.",
+  "retrieved": "2026-08-08",
+  "subdivisions": [
+    "NI",
+    "NW"
+  ],
+  "fully_covered_years": [
+    2022,
+    2027
+  ],
+  "periods": [
+    {
+      "subdivision": "NI",
+      "start": "2021-12-23",
+      "end": "2022-01-07",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2022-01-31",
+      "end": "2022-02-01",
+      "name": "Halbjahresferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2022-04-04",
+      "end": "2022-04-19",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2022-05-27",
+      "end": "2022-05-27",
+      "name": "Tag nach Himmelfahrt"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2022-06-07",
+      "end": "2022-06-07",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2022-07-14",
+      "end": "2022-08-24",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2022-10-17",
+      "end": "2022-10-28",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2022-12-23",
+      "end": "2023-01-06",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2023-01-30",
+      "end": "2023-01-31",
+      "name": "Halbjahresferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2023-03-27",
+      "end": "2023-04-11",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2023-05-19",
+      "end": "2023-05-19",
+      "name": "Tag nach Himmelfahrt"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2023-05-30",
+      "end": "2023-05-30",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2023-07-06",
+      "end": "2023-08-16",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2023-10-02",
+      "end": "2023-10-02",
+      "name": "Tag vor dem 3. Oktober"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2023-10-16",
+      "end": "2023-10-30",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2023-12-27",
+      "end": "2024-01-05",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2024-02-01",
+      "end": "2024-02-02",
+      "name": "Halbjahresferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2024-03-18",
+      "end": "2024-03-28",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2024-05-10",
+      "end": "2024-05-10",
+      "name": "Tag nach Himmelfahrt"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2024-05-21",
+      "end": "2024-05-21",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2024-06-24",
+      "end": "2024-08-03",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2024-10-04",
+      "end": "2024-10-19",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2024-11-01",
+      "end": "2024-11-01",
+      "name": "Tag nach dem Reformationstag"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2024-12-23",
+      "end": "2025-01-04",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-02-03",
+      "end": "2025-02-04",
+      "name": "Halbjahresferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-04-07",
+      "end": "2025-04-19",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-04-30",
+      "end": "2025-04-30",
+      "name": "Kirchentag"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-05-02",
+      "end": "2025-05-02",
+      "name": "Tag nach dem 1. Mai"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-05-30",
+      "end": "2025-05-30",
+      "name": "Tag nach Himmelfahrt"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-06-10",
+      "end": "2025-06-10",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-07-03",
+      "end": "2025-08-13",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-10-13",
+      "end": "2025-10-25",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2025-12-22",
+      "end": "2026-01-05",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2026-02-02",
+      "end": "2026-02-03",
+      "name": "Halbjahresferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2026-03-23",
+      "end": "2026-04-07",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2026-05-15",
+      "end": "2026-05-15",
+      "name": "Tag nach Himmelfahrt"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2026-05-26",
+      "end": "2026-05-26",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2026-07-02",
+      "end": "2026-08-12",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2026-10-12",
+      "end": "2026-10-24",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2026-12-23",
+      "end": "2027-01-09",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2027-02-01",
+      "end": "2027-02-02",
+      "name": "Halbjahresferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2027-03-22",
+      "end": "2027-04-03",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2027-05-07",
+      "end": "2027-05-07",
+      "name": "Tag nach Himmelfahrt"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2027-05-18",
+      "end": "2027-05-18",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2027-07-08",
+      "end": "2027-08-18",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2027-10-16",
+      "end": "2027-10-30",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NI",
+      "start": "2027-12-23",
+      "end": "2028-01-08",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2021-12-24",
+      "end": "2022-01-08",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2022-04-11",
+      "end": "2022-04-23",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2022-06-27",
+      "end": "2022-08-09",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2022-10-04",
+      "end": "2022-10-15",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2022-12-23",
+      "end": "2023-01-06",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2023-04-03",
+      "end": "2023-04-15",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2023-05-30",
+      "end": "2023-05-30",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2023-06-22",
+      "end": "2023-08-04",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2023-10-02",
+      "end": "2023-10-14",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2023-12-21",
+      "end": "2024-01-05",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2024-03-25",
+      "end": "2024-04-06",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2024-05-21",
+      "end": "2024-05-21",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2024-07-08",
+      "end": "2024-08-20",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2024-10-14",
+      "end": "2024-10-26",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2024-12-23",
+      "end": "2025-01-06",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2025-04-14",
+      "end": "2025-04-26",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2025-06-10",
+      "end": "2025-06-10",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2025-07-14",
+      "end": "2025-08-26",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2025-10-13",
+      "end": "2025-10-25",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2025-12-22",
+      "end": "2026-01-06",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2026-03-30",
+      "end": "2026-04-11",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2026-05-26",
+      "end": "2026-05-26",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2026-07-20",
+      "end": "2026-09-01",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2026-10-17",
+      "end": "2026-10-31",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2026-12-23",
+      "end": "2027-01-06",
+      "name": "Weihnachtsferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2027-03-22",
+      "end": "2027-04-03",
+      "name": "Osterferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2027-05-18",
+      "end": "2027-05-18",
+      "name": "Pfingstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2027-07-19",
+      "end": "2027-08-31",
+      "name": "Sommerferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2027-10-23",
+      "end": "2027-11-06",
+      "name": "Herbstferien"
+    },
+    {
+      "subdivision": "NW",
+      "start": "2027-12-24",
+      "end": "2028-01-08",
+      "name": "Weihnachtsferien"
+    }
+  ]
+}

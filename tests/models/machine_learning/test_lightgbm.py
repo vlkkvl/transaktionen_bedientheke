@@ -2007,3 +2007,57 @@ class StateAwareCalendarTest(unittest.TestCase):
         self.assertNotEqual(
             run_up.loc[10, "holiday_event_window"], "before_holiday_1_3d"
         )
+
+    def test_bridge_day_follows_the_stores_own_bundesland(self) -> None:
+        origin = pd.Timestamp("2024-05-27")
+        with patch(
+            "src.models.lightgbm.features.builder.store_subdivisions",
+            return_value=self.subdivisions,
+        ):
+            create_feature_tables(self.con, origins=[origin], design=self.design)
+            frame = make_feature_frame(self.con, [origin], self.design)
+
+        # Fronleichnam 2024 is Thursday 30 May in NW only, so the Friday after it
+        # bridges for the NW store alone.
+        bridge = frame.loc[frame.period.eq(pd.Timestamp("2024-05-31"))].set_index(
+            "MARKT_ID"
+        )
+        self.assertEqual(int(bridge.loc[11, "is_bridge_day"]), 1)
+        self.assertEqual(int(bridge.loc[10, "is_bridge_day"]), 0)
+        # Neither store is on school holiday that week.
+        self.assertEqual(int(bridge.loc[10, "is_school_holiday"]), 0)
+        self.assertEqual(int(bridge.loc[11, "is_school_holiday"]), 0)
+
+    def test_school_holiday_follows_the_stores_own_bundesland(self) -> None:
+        # 10 May 2024 is a bridge day in both Bundeslaender, but a school
+        # holiday in Niedersachsen only.
+        origin = pd.Timestamp("2024-05-06")
+        design = BenchmarkDesign(61, origin, 7, 7)
+        _create_assessed_origins(self.con, pd.DatetimeIndex([origin]), design)
+        with patch(
+            "src.models.lightgbm.features.builder.store_subdivisions",
+            return_value=self.subdivisions,
+        ):
+            create_feature_tables(self.con, origins=[origin], design=design)
+            frame = make_feature_frame(self.con, [origin], design)
+
+        target = frame.loc[frame.period.eq(pd.Timestamp("2024-05-10"))].set_index(
+            "MARKT_ID"
+        )
+        self.assertEqual(int(target.loc[10, "is_school_holiday"]), 1)
+        self.assertEqual(int(target.loc[11, "is_school_holiday"]), 0)
+        self.assertEqual(int(target.loc[10, "is_bridge_day"]), 1)
+        self.assertEqual(int(target.loc[11, "is_bridge_day"]), 1)
+
+    def test_calendar_flags_are_zero_on_ordinary_trading_days(self) -> None:
+        origin = pd.Timestamp("2024-05-27")
+        with patch(
+            "src.models.lightgbm.features.builder.store_subdivisions",
+            return_value=self.subdivisions,
+        ):
+            create_feature_tables(self.con, origins=[origin], design=self.design)
+            frame = make_feature_frame(self.con, [origin], self.design)
+
+        ordinary = frame.loc[frame.period.eq(pd.Timestamp("2024-05-28"))]
+        self.assertTrue((ordinary.is_bridge_day == 0).all())
+        self.assertTrue((ordinary.is_school_holiday == 0).all())
