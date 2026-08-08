@@ -14,10 +14,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from dateutil.easter import easter
 
-from src.data.preparation.calendar_days import (
-    bridge_day_dates,
-    school_holiday_dates,
-)
 from src.data.preparation.distribute_sales_over_active_days import (
     HOLIDAY_SUBDIVISIONS,
     create_germany_holidays,
@@ -376,8 +372,6 @@ FEATURE_COLUMNS = (
     "days_to_nearest_event",
     "holiday_event_window",
     "event_name",
-    "is_bridge_day",
-    "is_school_holiday",
     # Known action schedule
     "action_on_forecast_day",
     "action_during_horizon",
@@ -510,23 +504,6 @@ FEATURE_DESCRIPTIONS = {
     "event_name": (
         "Name of the nearest Niedersachsen public holiday or Muttertag when its "
         "absolute calendar-day offset is at most three; otherwise the category none."
-    ),
-    "is_bridge_day": (
-        "Indicator that the forecast target date is a Brueckentag in the store's own "
-        "Bundesland: a Monday-to-Friday working day that is not itself a public "
-        "holiday and that joins a public holiday to the weekend, meaning a Friday "
-        "whose Thursday is a public holiday or a Monday whose Tuesday is one. The "
-        "store trades on such a day. Derived from the target date and the public "
-        "holiday calendar alone, so it depends on nothing observed at or after the "
-        "forecast origin."
-    ),
-    "is_school_holiday": (
-        "Indicator that the forecast target date falls inside a school-holiday period "
-        "of the store's own Bundesland, taken from the committed official calendar in "
-        "reports/config/school_holidays.json. Niedersachsen and Nordrhein-Westfalen "
-        "differ by up to three weeks, so the value varies across stores on the same "
-        "date. Fixed by decree years in advance, so it depends on nothing observed at "
-        "or after the forecast origin."
     ),
     "action_on_forecast_day": (
         "Article-store promotion indicator recorded for the forecast target date; no "
@@ -1064,13 +1041,6 @@ def _holiday_calendar(
         else create_germany_holidays(subdivision, years)
     )
     public_holiday_dates = {pd.Timestamp(day) for day in holiday_map}
-    # Bridge days and school holidays follow the same Bundesland as the public
-    # holidays above; the Niedersachsen default keeps the pooled calendar
-    # consistent with `create_germany_ni_holidays`.
-    calendar_subdivision = subdivision if subdivision is not None else "NI"
-    calendar_years = range(start_date.year, end_date.year + 1)
-    bridge_days = bridge_day_dates(calendar_subdivision, calendar_years)
-    school_days = school_holiday_dates(calendar_subdivision, calendar_years)
     events = [(pd.Timestamp(day), str(name)) for day, name in holiday_map.items()]
     events.extend(
         (_mothers_day(year), "Muttertag")
@@ -1094,8 +1064,6 @@ def _holiday_calendar(
             {
                 "period": target.date(),
                 "is_public_holiday": target in public_holiday_dates,
-                "is_bridge_day": target in bridge_days,
-                "is_school_holiday": target in school_days,
                 "days_to_nearest_event": delta,
                 "holiday_event_window": window,
                 "event_name": nearest_name if abs(delta) <= 3 else "none",
@@ -2781,8 +2749,6 @@ def _feature_query_statement(
             c.days_to_nearest_event,
             c.holiday_event_window,
             c.event_name,
-            CAST(c.is_bridge_day AS INTEGER) AS is_bridge_day,
-            CAST(c.is_school_holiday AS INTEGER) AS is_school_holiday,
             p.action_on_forecast_day,
             p.action_during_horizon,
             p.days_since_last_action,
