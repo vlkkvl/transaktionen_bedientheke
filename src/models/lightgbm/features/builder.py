@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 import re
 from typing import Any, Iterable, Iterator
@@ -56,6 +57,14 @@ EVENT_POSITION_SHRINKAGE_PRIOR_WEIGHT = 1
 # baseline lags the spring warming and turns a whole spring evaluation window
 # into a spurious warm anomaly.
 ERA5_WEATHER_PATH = ROOT / "data" / "interim" / "weather" / "era5_grid_daily_weather.csv"
+# Promotion context extracted from raw sale lines by
+# src/data/preparation/extract_action_history.py: campaign numbers, planned
+# validity windows, and unit prices, which the processed daily table drops.
+ACTION_DAYS_PATH = ROOT / "data" / "interim" / "actions" / "article_store_day_actions.parquet"
+REGULAR_PRICE_PATH = ROOT / "data" / "interim" / "actions" / "article_day_regular_price.parquet"
+# Prior weight (in pre-origin action-day observations) shrinking the
+# per-article action lift toward the sourcing-group pooled lift.
+ARTICLE_ACTION_LIFT_PRIOR_OBS = 24
 MARKET_COORDINATES_PATH = ROOT / "data" / "raw" / "maerkte" / "maerkte.csv"
 ERA5_GRID_DEGREES = 0.25
 WEATHER_SEASONAL_WINDOW_DAYS = 7
@@ -79,6 +88,32 @@ REMOVED_FEATURE_COLUMNS = frozenset(
     {
         "lag_364",
         "lag_371",
+        # The 08_03 cross-article action batch, fully reverted. The store-wide
+        # flight-intensity count was dropped first (weakest mechanism, and the
+        # pooled-bias source on the superseded dataset: occurrence rank
+        # 14.8/55, bias -0.97% -> -1.63%). The two class-competition features
+        # were then measured null on transactions_fixed (row +0.17 pp, no
+        # closure of the quiet-class bias, gain share <= 0.05%) and removed;
+        # notebooks/08_calendar_features/08_03 is the executed record.
+        "store_other_actions_on_forecast_day",
+        "same_class_other_actions_on_forecast_day",
+        "same_class_action_share_on_forecast_day",
+        # The 08_05 decentral-markdown batch, fully reverted. Mechanisms were
+        # real and pre-verified (markdown-day demand 1.61x at forecast/actual
+        # 0.59, propensity 1.3%->37.7%, split-half lift corr 0.78), but the
+        # event is a same-day store decision: propensity spreads the lift over
+        # ~12x more quiet days than event days, so the boosters left the
+        # features unused (best rank 17/64, gain share 0.53%) and row WAPE
+        # moved +0.08 pp with the targeted rows unchanged (0.593->0.598).
+        # This confirms the 09_01 oracle finding that average-lift corrections
+        # cannot identify which rows spike; only a same-day data feed could.
+        # notebooks/08_calendar_features/08_05 is the executed record.
+        "decentral_markdowns_last_28d",
+        "days_since_last_decentral_markdown",
+        "series_markdown_rate",
+        "article_markdown_lift",
+        "markdown_expected_lift",
+        "spoilage_days_last_28d",
     }
 )
 
@@ -375,7 +410,13 @@ FEATURE_COLUMNS = (
     # Known action schedule
     "action_on_forecast_day",
     "action_during_horizon",
+    "action_depth_on_forecast_day",
+    "action_flight_day",
+    "same_class_promoted_depth",
     # Historical action behavior (strictly before the origin)
+    "article_action_lift",
+    "action_expected_lift",
+    "article_typical_action_depth",
     "days_since_last_action",
     "actions_last_28d",
     "mean_action_lift_in_sourcing_group",
@@ -513,6 +554,49 @@ FEATURE_DESCRIPTIONS = {
         "Maximum article-store promotion indicator across all observed target rows in "
         "the configured forecast horizon for the origin; inactive target rows remain "
         "in the maximum."
+    ),
+    "action_depth_on_forecast_day": (
+        "One minus the article's promoted unit price on the forecast target date "
+        "divided by its mean non-action unit price over the 28 calendar days "
+        "strictly before the origin. The promoted price belongs to the same "
+        "known-ahead promotion schedule as action_on_forecast_day; the regular "
+        "reference uses only pre-origin days. Zero on days without an action; "
+        "missing when the action's price or the regular reference is unknown."
+    ),
+    "action_flight_day": (
+        "Position of the forecast target date inside its promotion's planned "
+        "validity window: target date minus GUELTIG_VON plus one, capped at 28. "
+        "The validity window belongs to the same known-ahead promotion schedule "
+        "as action_on_forecast_day. Zero on days without an action; missing when "
+        "an action has no recorded window."
+    ),
+    "same_class_promoted_depth": (
+        "Deepest historically-typical discount among the articles of the same "
+        "Warenklasse promoted at the store on the forecast target date, the "
+        "article itself included. Promotion membership comes from the known-ahead "
+        "schedule; each article's typical depth is measured only on its action "
+        "days strictly before the origin. Zero when no promoted class article has "
+        "a measurable depth history."
+    ),
+    "article_action_lift": (
+        "Per-article promotion lift: the article's mean demand on active action "
+        "rows divided by its mean demand on active non-action rows minus one, "
+        "both pooled over stores and restricted to rows strictly before the "
+        "origin, shrunk toward mean_action_lift_in_sourcing_group with a prior "
+        "weight of 24 action-day observations. Missing only when neither the "
+        "article nor its sourcing group has any usable history."
+    ),
+    "action_expected_lift": (
+        "article_action_lift on rows whose forecast target date has a recorded "
+        "promotion, and zero otherwise — the precomputed interaction of the "
+        "known action schedule with the article's historical promotion response."
+    ),
+    "article_typical_action_depth": (
+        "Mean historical discount depth of the article: one minus the promoted "
+        "unit price divided by the article's mean non-action unit price of the "
+        "28 days before each action day, averaged over all action days strictly "
+        "before the origin. Missing when the article has no measurable action "
+        "price history."
     ),
     "days_since_last_action": (
         "Calendar-day difference between the origin and the most recent observed row "
@@ -1021,6 +1105,87 @@ def _store_daily_temperature() -> pd.DataFrame:
             "temperature_c": joined["temperature_mean_c"].astype("float64"),
         }
     ).drop_duplicates(["MARKT_ID", "period"])
+
+
+@lru_cache(maxsize=4)
+def _article_product_classes_cached(data_dir: str) -> pd.DataFrame:
+    directory = Path(data_dir)
+    empty = pd.DataFrame(
+        columns=["ARTIKEL_ID", "product_class"]
+    ).astype({"ARTIKEL_ID": "int64", "product_class": "object"})
+    if not directory.exists() or not any(directory.glob("*.parquet")):
+        return empty
+    scratch = duckdb.connect()
+    try:
+        frame = scratch.execute(
+            """
+            SELECT
+                ARTIKEL_ID::BIGINT AS ARTIKEL_ID,
+                ANY_VALUE(N_WARENKLASSE_KBEZ) AS product_class
+            FROM read_parquet(?)
+            WHERE (is_fcm OR is_pseudo)
+              AND WGR_ID IN (890, 900)
+              AND N_WARENKLASSE_KBEZ IS NOT NULL
+            GROUP BY ARTIKEL_ID
+            """,
+            [str(directory / "*.parquet")],
+        ).fetchdf()
+    finally:
+        scratch.close()
+    return frame if not frame.empty else empty
+
+
+def _article_product_classes(design: BenchmarkDesign) -> pd.DataFrame:
+    """Map every article to its Warenklasse from the processed transactions.
+
+    The Warenklasse (``N_WARENKLASSE_KBEZ``, e.g. Schweinefleisch or Bratwurst)
+    is a static article attribute that ``benchmark_daily_rows`` does not carry,
+    so the mapping is read from the processed transaction parquet directly.
+    Currently unused by the feature build — the 08_03 class-competition
+    features were reverted as null — but retained for class-keyed follow-ups
+    (e.g. depth-weighted competition). Missing inputs yield an empty frame so
+    consumers degrade to zero/NULL rather than breaking the build, mirroring
+    the weather cache behaviour.
+    """
+    return _article_product_classes_cached(str(design.data_dir)).copy()
+
+
+def _article_store_action_days() -> pd.DataFrame:
+    """Per article-store-day promotion record from the raw sale lines.
+
+    Carries the campaign number, the planned validity window
+    (``GUELTIG_VON``/``GUELTIG_BIS``) and the mean promoted unit price of the
+    day. The planned window and price belong to the same known-ahead central
+    promotion schedule as ``action_on_forecast_day``. A missing extract yields
+    an empty frame so the features degrade to zero/NULL, mirroring the weather
+    cache behaviour.
+    """
+    if not ACTION_DAYS_PATH.exists():
+        return pd.DataFrame(
+            columns=[
+                "ARTIKEL_ID", "MARKT_ID", "period",
+                "aktionsnummer", "gueltig_von", "gueltig_bis",
+                "action_unit_price",
+            ]
+        ).astype({"ARTIKEL_ID": "int64", "MARKT_ID": "int64",
+                  "action_unit_price": "float64"})
+    return pd.read_parquet(
+        ACTION_DAYS_PATH,
+        columns=["ARTIKEL_ID", "MARKT_ID", "period", "aktionsnummer",
+                 "gueltig_von", "gueltig_bis", "action_unit_price"],
+    )
+
+
+def _article_day_regular_prices() -> pd.DataFrame:
+    """Per article-day mean non-action unit price across stores."""
+    if not REGULAR_PRICE_PATH.exists():
+        return pd.DataFrame(
+            columns=["ARTIKEL_ID", "period", "regular_unit_price"]
+        ).astype({"ARTIKEL_ID": "int64", "regular_unit_price": "float64"})
+    return pd.read_parquet(
+        REGULAR_PRICE_PATH,
+        columns=["ARTIKEL_ID", "period", "regular_unit_price"],
+    )
 
 
 def _holiday_calendar(
@@ -2558,6 +2723,145 @@ def create_feature_tables(
         FROM benchmark_origin_history
         """
     )
+    # Promotion context from the raw-line extract. Campaign windows and prices
+    # on the target day belong to the same known-ahead promotion schedule as
+    # action_on_forecast_day; every statistic below that summarizes history is
+    # restricted to rows strictly before the origin.
+    con.register("ml_article_class_frame", _article_product_classes(design))
+    con.execute(
+        "CREATE OR REPLACE TABLE ml_article_class AS "
+        "SELECT * FROM ml_article_class_frame"
+    )
+    con.register("ml_action_days_frame", _article_store_action_days())
+    con.register("ml_regular_prices_frame", _article_day_regular_prices())
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_action_article_days AS
+        SELECT
+            ARTIKEL_ID,
+            period::DATE AS period,
+            MIN(gueltig_von)::DATE AS gueltig_von,
+            AVG(action_unit_price) AS action_unit_price
+        FROM ml_action_days_frame
+        GROUP BY 1, 2
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_regular_prices AS
+        SELECT ARTIKEL_ID, period::DATE AS period, regular_unit_price
+        FROM ml_regular_prices_frame
+        WHERE regular_unit_price > 0
+        """
+    )
+    # Trailing 28-day regular price per origin, the depth reference for the
+    # target-day discount; strictly pre-origin.
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_article_regular_price_28 AS
+        SELECT
+            o.origin,
+            r.ARTIKEL_ID,
+            AVG(r.regular_unit_price) AS regular_price_28d
+        FROM ml_snapshot_origins AS o
+        JOIN ml_regular_prices AS r
+            ON r.period < o.origin
+            AND r.period >= (o.origin - INTERVAL 28 DAY)
+        GROUP BY 1, 2
+        """
+    )
+    # Historical discount depth per action day (each day referenced against
+    # the article's regular price of the 28 days before that action day), and
+    # its strictly-pre-origin per-article mean.
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_article_depth_stats AS
+        WITH day_depth AS (
+            SELECT
+                a.ARTIKEL_ID,
+                a.period,
+                1.0 - a.action_unit_price / NULLIF(AVG(r.regular_unit_price), 0)
+                    AS discount_depth
+            FROM ml_action_article_days AS a
+            JOIN ml_regular_prices AS r
+                ON r.ARTIKEL_ID = a.ARTIKEL_ID
+                AND r.period < a.period
+                AND r.period >= (a.period - INTERVAL 28 DAY)
+            WHERE a.action_unit_price IS NOT NULL
+            GROUP BY a.ARTIKEL_ID, a.period, a.action_unit_price
+        )
+        SELECT
+            o.origin,
+            d.ARTIKEL_ID,
+            AVG(d.discount_depth) AS typical_depth,
+            COUNT(*) AS depth_obs
+        FROM ml_snapshot_origins AS o
+        JOIN day_depth AS d ON d.period < o.origin
+        WHERE d.discount_depth IS NOT NULL
+        GROUP BY 1, 2
+        """
+    )
+    # Per-article action lift over all strictly-pre-origin active rows,
+    # pooled across stores; shrinkage toward the sourcing-group lift happens
+    # in the feature query where both values meet.
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ml_article_action_stats AS
+        WITH daily AS (
+            SELECT
+                ARTIKEL_ID,
+                period,
+                SUM(demand) FILTER (WHERE is_active AND action_flag = 1)
+                    AS action_demand,
+                COUNT(*) FILTER (WHERE is_active AND action_flag = 1)
+                    AS action_obs,
+                SUM(demand) FILTER (WHERE is_active AND action_flag = 0)
+                    AS regular_demand,
+                COUNT(*) FILTER (WHERE is_active AND action_flag = 0)
+                    AS regular_obs
+            FROM benchmark_daily_rows
+            GROUP BY 1, 2
+        )
+        SELECT
+            o.origin,
+            d.ARTIKEL_ID,
+            SUM(d.action_obs) AS action_obs,
+            (SUM(d.action_demand) / NULLIF(SUM(d.action_obs), 0))
+                / NULLIF(
+                    SUM(d.regular_demand) / NULLIF(SUM(d.regular_obs), 0), 0
+                ) - 1.0 AS raw_lift
+        FROM ml_snapshot_origins AS o
+        JOIN daily AS d ON d.period < o.origin
+        GROUP BY 1, 2
+        """
+    )
+    # Deepest historically-typical discount among the class articles promoted
+    # at the store on each target day (the article itself included).
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE ml_class_promoted_depth AS
+        SELECT
+            tp.origin,
+            t.MARKT_ID,
+            t.period,
+            cls.product_class,
+            MAX(ds.typical_depth) AS max_class_depth
+        FROM (
+            SELECT
+                o.origin,
+                (o.origin + off.day_offset * INTERVAL 1 DAY)::DATE AS period
+            FROM ml_snapshot_origins AS o
+            CROSS JOIN range({int(design.forecast_horizon_days)})
+                AS off(day_offset)
+        ) AS tp
+        JOIN ml_target_rows AS t
+            ON t.period = tp.period AND t.action_flag = 1
+        JOIN ml_article_class AS cls ON t.ARTIKEL_ID = cls.ARTIKEL_ID
+        JOIN ml_article_depth_stats AS ds
+            ON ds.origin = tp.origin AND ds.ARTIKEL_ID = t.ARTIKEL_ID
+        GROUP BY 1, 2, 3, 4
+        """
+    )
     for resolved_table in (
         "ml_active_series_recent_features",
         "ml_active_series_non_event_features",
@@ -2654,6 +2958,38 @@ def _feature_query_statement(
                 MAX(t.action_flag) OVER (
                     PARTITION BY h.ARTIKEL_ID, h.MARKT_ID, h.origin
                 )::INTEGER AS action_during_horizon,
+                CASE
+                    WHEN t.action_flag = 1 AND act.action_unit_price IS NOT NULL
+                        AND reg.regular_price_28d > 0
+                    THEN 1.0 - act.action_unit_price / reg.regular_price_28d
+                    WHEN t.action_flag = 1 THEN NULL
+                    ELSE 0.0
+                END AS action_depth_on_forecast_day,
+                CASE
+                    WHEN t.action_flag = 1 AND act.gueltig_von IS NOT NULL
+                        AND t.period >= act.gueltig_von
+                    THEN LEAST(
+                        DATE_DIFF('day', act.gueltig_von, t.period) + 1, 28
+                    )
+                    WHEN t.action_flag = 1 THEN NULL
+                    ELSE 0
+                END AS action_flight_day,
+                CASE
+                    WHEN lift.raw_lift IS NULL
+                        AND h.mean_action_lift_in_sourcing_group IS NULL
+                    THEN NULL
+                    ELSE (
+                        COALESCE(lift.raw_lift, 0)
+                            * COALESCE(lift.action_obs, 0)
+                        + COALESCE(h.mean_action_lift_in_sourcing_group, 0)
+                            * {ARTICLE_ACTION_LIFT_PRIOR_OBS}
+                    ) / (
+                        COALESCE(lift.action_obs, 0)
+                        + {ARTICLE_ACTION_LIFT_PRIOR_OBS}
+                    )
+                END AS article_action_lift,
+                dep.typical_depth AS article_typical_action_depth,
+                COALESCE(comp.max_class_depth, 0) AS same_class_promoted_depth,
                 lags.same_weekday_lag_7,
                 lags.same_weekday_lag_14
             FROM target_dates AS h
@@ -2664,6 +3000,25 @@ def _feature_query_statement(
             INNER JOIN ml_store_closure_features AS closure
                 ON t.MARKT_ID = closure.MARKT_ID
                 AND t.period = closure.period
+            LEFT JOIN ml_action_article_days AS act
+                ON act.ARTIKEL_ID = t.ARTIKEL_ID
+                AND act.period = t.period
+            LEFT JOIN ml_article_regular_price_28 AS reg
+                ON reg.origin = h.origin
+                AND reg.ARTIKEL_ID = t.ARTIKEL_ID
+            LEFT JOIN ml_article_action_stats AS lift
+                ON lift.origin = h.origin
+                AND lift.ARTIKEL_ID = t.ARTIKEL_ID
+            LEFT JOIN ml_article_depth_stats AS dep
+                ON dep.origin = h.origin
+                AND dep.ARTIKEL_ID = t.ARTIKEL_ID
+            LEFT JOIN ml_article_class AS cls
+                ON cls.ARTIKEL_ID = t.ARTIKEL_ID
+            LEFT JOIN ml_class_promoted_depth AS comp
+                ON comp.origin = h.origin
+                AND comp.MARKT_ID = t.MARKT_ID
+                AND comp.period = t.period
+                AND comp.product_class = cls.product_class
             LEFT JOIN ml_series_lag_features AS lags
                 ON t.ARTIKEL_ID = lags.ARTIKEL_ID
                 AND t.MARKT_ID = lags.MARKT_ID
@@ -2751,6 +3106,15 @@ def _feature_query_statement(
             c.event_name,
             p.action_on_forecast_day,
             p.action_during_horizon,
+            p.action_depth_on_forecast_day,
+            p.action_flight_day,
+            p.article_action_lift,
+            CASE
+                WHEN p.action_on_forecast_day = 1 THEN p.article_action_lift
+                ELSE 0.0
+            END AS action_expected_lift,
+            p.article_typical_action_depth,
+            p.same_class_promoted_depth,
             p.days_since_last_action,
             p.actions_last_28d,
             p.mean_action_lift_in_sourcing_group,

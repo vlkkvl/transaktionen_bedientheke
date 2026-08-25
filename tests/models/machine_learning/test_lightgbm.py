@@ -25,6 +25,7 @@ from src.models.lightgbm import (
     TARGET_SCALE_COLUMN,
     TWEEDIE_MODEL_NAME,
     TWO_STAGE_MODEL_NAME,
+    TWO_STAGE_QUANTILE_MODEL_NAME,
     WEEKLY_MODEL_NAME,
     GlobalLightGBMConfig,
     create_feature_tables,
@@ -1810,9 +1811,9 @@ class GlobalLightGBMTest(unittest.TestCase):
         with redirect_stdout(progress):
             results = fit_all_lightgbm_models(frames, config)
 
-        self.assertEqual(len(results), 4)
-        self.assertIn("[model 1/4] Fitting", progress.getvalue())
-        self.assertIn("[model 4/4] Completed", progress.getvalue())
+        self.assertEqual(len(results), 5)
+        self.assertIn("[model 1/5] Fitting", progress.getvalue())
+        self.assertIn("[model 5/5] Completed", progress.getvalue())
         expected_training_settings = {
             MODEL_NAME: [("regression_l2", "rmse")],
             TWEEDIE_MODEL_NAME: [("tweedie", "tweedie_deviance")],
@@ -1820,17 +1821,29 @@ class GlobalLightGBMTest(unittest.TestCase):
                 ("binary", "binary_logloss"),
                 ("gamma", "gamma_deviance"),
             ],
+            TWO_STAGE_QUANTILE_MODEL_NAME: [
+                ("binary", "binary_logloss"),
+                ("quantile", "quantile"),
+                ("quantile", "quantile"),
+                ("quantile", "quantile"),
+            ],
             WEEKLY_MODEL_NAME: [
                 ("tweedie", "tweedie_deviance_weekly_totals")
             ],
+        }
+        expected_summary_rows = {
+            TWO_STAGE_MODEL_NAME: 2,
+            TWO_STAGE_QUANTILE_MODEL_NAME: 4,
         }
         for model_name, result in results.items():
             self.assertEqual(len(result.forecasts), len(frames.evaluation))
             active = result.forecasts["is_active"]
             self.assertTrue(result.forecasts.loc[active, "forecast"].ge(0).all())
             self.assertTrue(result.forecasts.loc[~active, "forecast"].isna().all())
-            expected_summary_rows = 2 if model_name == TWO_STAGE_MODEL_NAME else 1
-            self.assertEqual(len(result.training_summary), expected_summary_rows)
+            self.assertEqual(
+                len(result.training_summary),
+                expected_summary_rows.get(model_name, 1),
+            )
             self.assertEqual(result.training_summary.loc[0, "evaluation_origins"], 2)
             self.assertEqual(
                 list(
@@ -1894,6 +1907,35 @@ class GlobalLightGBMTest(unittest.TestCase):
             two_stage.model.quantity.feature_columns,
             QUANTITY_FEATURE_COLUMNS,
         )
+
+        quantile = results[TWO_STAGE_QUANTILE_MODEL_NAME]
+        quantile_active = quantile.forecasts["is_active"]
+        p10 = quantile.forecasts.loc[quantile_active, "positive_quantity_p10"]
+        p50 = quantile.forecasts.loc[quantile_active, "positive_quantity_p50"]
+        p90 = quantile.forecasts.loc[quantile_active, "positive_quantity_p90"]
+        self.assertTrue(p10.le(p50).all())
+        self.assertTrue(p50.le(p90).all())
+        self.assertTrue(
+            np.allclose(
+                quantile.forecasts.loc[quantile_active, "forecast"],
+                quantile.forecasts.loc[
+                    quantile_active, "occurrence_probability"
+                ]
+                * p50,
+            )
+        )
+        self.assertEqual(
+            quantile.model.occurrence.feature_columns,
+            OCCURRENCE_FEATURE_COLUMNS,
+        )
+        self.assertEqual(
+            [level for level, _ in quantile.model.quantity_by_level],
+            [0.1, 0.5, 0.9],
+        )
+        for _, quantity_model in quantile.model.quantity_by_level:
+            self.assertEqual(
+                quantity_model.feature_columns, QUANTITY_FEATURE_COLUMNS
+            )
 
         feature_subset = tuple(FEATURE_COLUMNS[:-4])
         subset_result = fit_two_stage(
@@ -2007,3 +2049,154 @@ class StateAwareCalendarTest(unittest.TestCase):
         self.assertNotEqual(
             run_up.loc[10, "holiday_event_window"], "before_holiday_1_3d"
         )
+
+
+class ActionHistoryFeatureTest(unittest.TestCase):
+    """Campaign-derived action features: target-day depth against a strictly
+    pre-origin price reference, flight position from the planned validity
+    window, EB-shrunk per-article lift, and class promoted depth."""
+
+    ORIGIN = pd.Timestamp("2025-01-06")
+    ACTION_DAY = pd.Timestamp("2025-01-08")
+
+    def setUp(self) -> None:
+        self.con = duckdb.connect()
+        self.addCleanup(self.con.close)
+        self.con.execute(
+            """
+            CREATE TEMP TABLE benchmark_daily_rows (
+                ARTIKEL_ID BIGINT, MARKT_ID BIGINT, period DATE, demand DOUBLE,
+                is_active BOOLEAN, reason_closed VARCHAR, action_flag TINYINT,
+                sourcing_group VARCHAR, category_id INTEGER
+            )
+            """
+        )
+        dates = pd.date_range("2024-01-01", "2025-01-12", freq="D")
+        self.historic_action_days = [
+            date for index, date in enumerate(dates)
+            if index % 30 == 0 and date < self.ORIGIN
+        ]
+        rows = []
+        for article, action_demand in ((1, 3.0), (5, 1.0)):
+            for date in dates:
+                historic_action = date in self.historic_action_days
+                target_action = article == 1 and date == self.ACTION_DAY
+                rows.append((
+                    article, 10, date.date(),
+                    action_demand if historic_action else 1.0,
+                    True, None, int(historic_action or target_action),
+                    "Pseudo", 890,
+                ))
+        for article in (2, 3):
+            rows.extend(
+                (article, 10, date.date(), 1.0, True, None, 0, "Pseudo", 890)
+                for date in dates
+            )
+        self.con.executemany(
+            "INSERT INTO benchmark_daily_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        self.design = BenchmarkDesign(61, self.ORIGIN, 7, 7)
+        create_history_features(self.con)
+        _create_assessed_origins(
+            self.con, pd.DatetimeIndex([self.ORIGIN]), self.design
+        )
+        action_rows = [
+            {"ARTIKEL_ID": 1, "MARKT_ID": 10, "period": date.date(),
+             "aktionsnummer": 900 + index, "gueltig_von": date.date(),
+             "gueltig_bis": date.date(), "action_unit_price": 8.0}
+            for index, date in enumerate(self.historic_action_days)
+        ]
+        action_rows.append(
+            {"ARTIKEL_ID": 1, "MARKT_ID": 10, "period": self.ACTION_DAY.date(),
+             "aktionsnummer": 999,
+             "gueltig_von": pd.Timestamp("2025-01-06").date(),
+             "gueltig_bis": pd.Timestamp("2025-01-11").date(),
+             "action_unit_price": 8.0}
+        )
+        self.action_days = pd.DataFrame(action_rows)
+        # Regular price 10 before the origin; an absurd 100 from the origin on
+        # is the leakage canary: it may never enter any depth reference.
+        self.regular_prices = pd.DataFrame([
+            {"ARTIKEL_ID": 1, "period": date.date(),
+             "regular_unit_price": 10.0 if date < self.ORIGIN else 100.0}
+            for date in dates
+        ])
+        self.classes = pd.DataFrame({
+            "ARTIKEL_ID": [1, 2, 3, 5],
+            "product_class": ["Schweinefleisch", "Schweinefleisch",
+                              "Bratwurst", "Schweinefleisch"],
+        })
+
+    def _frame(self) -> pd.DataFrame:
+        with patch(
+            "src.models.lightgbm.features.builder._article_store_action_days",
+            return_value=self.action_days,
+        ), patch(
+            "src.models.lightgbm.features.builder._article_day_regular_prices",
+            return_value=self.regular_prices,
+        ), patch(
+            "src.models.lightgbm.features.builder._article_product_classes",
+            return_value=self.classes,
+        ):
+            create_feature_tables(
+                self.con, origins=[self.ORIGIN], design=self.design
+            )
+            return make_feature_frame(self.con, [self.ORIGIN], self.design)
+
+    def test_depth_flight_and_class_depth_on_the_action_day(self) -> None:
+        frame = self._frame()
+        day = frame.loc[frame.period.eq(self.ACTION_DAY)].set_index("ARTIKEL_ID")
+        # Depth uses the pre-origin regular price (10), never the post-origin
+        # canary (100): 1 - 8/10 = 0.2.
+        self.assertAlmostEqual(
+            day.loc[1, "action_depth_on_forecast_day"], 0.2, places=9
+        )
+        # 2025-01-08 is day 3 of the campaign valid from 2025-01-06.
+        self.assertEqual(day.loc[1, "action_flight_day"], 3)
+        self.assertAlmostEqual(
+            day.loc[1, "article_typical_action_depth"], 0.2, places=9
+        )
+        # Class neighbours of the promoted article see its typical depth; a
+        # different Warenklasse sees zero.
+        self.assertAlmostEqual(
+            day.loc[2, "same_class_promoted_depth"], 0.2, places=9
+        )
+        self.assertAlmostEqual(
+            day.loc[1, "same_class_promoted_depth"], 0.2, places=9
+        )
+        self.assertEqual(day.loc[3, "same_class_promoted_depth"], 0.0)
+        # Non-promoted rows carry zero depth and flight position.
+        self.assertEqual(day.loc[2, "action_depth_on_forecast_day"], 0.0)
+        self.assertEqual(day.loc[2, "action_flight_day"], 0)
+
+    def test_article_action_lift_is_shrunk_toward_the_pooled_lift(self) -> None:
+        frame = self._frame()
+        day = frame.loc[frame.period.eq(self.ACTION_DAY)].set_index("ARTIKEL_ID")
+        observations = len(self.historic_action_days)
+        raw_lift, pooled_lift = 2.0, 1.0
+        expected = (raw_lift * observations + pooled_lift * 24) / (
+            observations + 24
+        )
+        self.assertAlmostEqual(
+            day.loc[1, "article_action_lift"], expected, places=6
+        )
+        # An article without its own action history falls back to the pooled
+        # sourcing-group lift.
+        self.assertAlmostEqual(
+            day.loc[2, "article_action_lift"], pooled_lift, places=6
+        )
+        # The interaction column fires only on promoted rows.
+        self.assertAlmostEqual(
+            day.loc[1, "action_expected_lift"], expected, places=6
+        )
+        self.assertEqual(day.loc[2, "action_expected_lift"], 0.0)
+
+    def test_quiet_day_is_inert(self) -> None:
+        frame = self._frame()
+        quiet = frame.loc[frame.period.eq(pd.Timestamp("2025-01-07"))]
+        self.assertTrue(quiet["action_depth_on_forecast_day"].eq(0).all())
+        self.assertTrue(quiet["action_flight_day"].eq(0).all())
+        self.assertTrue(quiet["same_class_promoted_depth"].eq(0).all())
+        self.assertTrue(quiet["action_expected_lift"].eq(0).all())
+

@@ -18,6 +18,7 @@ MODEL_FILE_NAMES = {
     "global_lightgbm": "lightgbm_l2",
     "global_lightgbm_tweedie_daily": "lightgbm_tweedie",
     "global_lightgbm_two_stage": "lightgbm_two_stage",
+    "global_lightgbm_two_stage_quantile": "lightgbm_two_stage_quantile",
     "global_lightgbm_weekly_total": "lightgbm_weekly_total",
 }
 

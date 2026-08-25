@@ -26,7 +26,10 @@ from src.models.lightgbm.features.builder import (
 
 FEATURE_SET_NAME = "lightgbm_daily"
 FEATURE_SET_VERSION = "1"
-FEATURE_BUILDER_VERSION = "2026-08-07.4"
+# .2 marks the full revert of the 08_05 markdown batch: the logic equals the
+# 2026-08-16.3 contract again, but the version moves forward so no cached
+# partition can silently claim a lineage the code no longer guarantees.
+FEATURE_BUILDER_VERSION = "2026-08-18.2"
 DEFAULT_FEATURE_STORE_DIR = ROOT / "data" / "processed" / "model_features"
 
 

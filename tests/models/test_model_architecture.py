@@ -21,6 +21,7 @@ from src.models.lightgbm.tweedie.model import (
     TweedieHyperparameters,
 )
 from src.models.lightgbm.two_stage.model import TwoStageConfig
+from src.models.lightgbm.two_stage_quantile.model import TwoStageQuantileConfig
 from src.models.lightgbm.weekly_total.model import WeeklyTotalConfig
 from src.models.lightgbm.runner import run_specs
 
@@ -29,8 +30,8 @@ class ModelConfigurationTest(unittest.TestCase):
     def test_registry_has_independently_configured_model_types(self) -> None:
         configs = [spec.make_config() for spec in LIGHTGBM_MODELS]
 
-        self.assertEqual(len(configs), 4)
-        self.assertEqual(len({type(config) for config in configs}), 4)
+        self.assertEqual(len(configs), 5)
+        self.assertEqual(len({type(config) for config in configs}), 5)
         self.assertTrue(all(spec.family == "lightgbm" for spec in LIGHTGBM_MODELS))
 
     def test_tweedie_tuning_does_not_change_l2_parameters(self) -> None:
@@ -55,6 +56,20 @@ class ModelConfigurationTest(unittest.TestCase):
         )
         self.assertEqual(config.quantity_parameters()["objective"], "gamma")
         self.assertEqual(config.quantity_parameters()["metric"], "gamma")
+
+    def test_two_stage_quantile_owns_per_level_quantity_parameters(self) -> None:
+        config = TwoStageQuantileConfig()
+
+        self.assertEqual(config.quantile_levels, (0.1, 0.5, 0.9))
+        self.assertEqual(config.occurrence_parameters()["objective"], "binary")
+        for level in config.quantile_levels:
+            parameters = config.quantity_parameters(level)
+            self.assertEqual(parameters["objective"], "quantile")
+            self.assertEqual(parameters["metric"], "quantile")
+            self.assertEqual(parameters["alpha"], level)
+        gamma = TwoStageConfig().quantity_parameters()
+        self.assertEqual(gamma["objective"], "gamma")
+        self.assertNotIn("alpha", gamma)
 
     def test_objectives_and_early_stopping_metrics_are_model_specific(self) -> None:
         l2 = L2Config().parameters()
@@ -204,13 +219,14 @@ class FeatureStoreTest(unittest.TestCase):
         validation_paths = [
             path for path in paths if path.parent.name == "validation_predictions"
         ]
-        self.assertEqual(len(validation_paths), 1)
-        validation_predictions = pd.read_csv(validation_paths[0])
-        self.assertIn("occurrence_probability", validation_predictions)
-        self.assertEqual(
-            len(validation_predictions),
-            window.validation_origins * 7,
-        )
+        self.assertEqual(len(validation_paths), 2)  # two_stage + two_stage_quantile
+        for validation_path in validation_paths:
+            validation_predictions = pd.read_csv(validation_path)
+            self.assertIn("occurrence_probability", validation_predictions)
+            self.assertEqual(
+                len(validation_predictions),
+                window.validation_origins * 7,
+            )
         generations = list(
             (root / "features" / "lightgbm_daily" / "v1").iterdir()
         )

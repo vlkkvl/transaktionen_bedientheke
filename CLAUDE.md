@@ -15,7 +15,7 @@ There is no `pyproject.toml`, `setup.py`, or `Makefile`. Dependencies are pinned
 `requirements.txt`; the interpreter is the in-repo virtualenv (Python 3.12).
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                       # full suite (66 tests)
+.venv/bin/python -m pytest tests/ -q                       # full suite (92 tests)
 .venv/bin/python -m pytest tests/models/machine_learning/test_lightgbm.py -q
 .venv/bin/python -m pytest tests/models/machine_learning/test_lightgbm.py -k "position_lift" -x -q
 ```
@@ -26,7 +26,7 @@ configured.
 Running models (each writes CSVs under `reports/results/`):
 
 ```bash
-.venv/bin/python -m src.models.lightgbm                    # all 4 registered LightGBM variants
+.venv/bin/python -m src.models.lightgbm                    # all 5 registered LightGBM variants
 .venv/bin/python -m src.models.lightgbm.two_stage          # one variant
 .venv/bin/python -m src.models.lightgbm.two_stage --rebuild-features
 .venv/bin/python -m src.models.benchmark                   # naive/benchmark models
@@ -83,13 +83,14 @@ phrasing and the invariant when adding features.
 
 ### Model registry and config ownership
 
-`src/models/lightgbm/registry.py` lists four `ModelSpec`s (`src/models/core/contracts.py`):
+`src/models/lightgbm/registry.py` lists five `ModelSpec`s (`src/models/core/contracts.py`):
 
 | Model | Objective |
 |---|---|
 | `l2` | daily direct, `regression_l2` |
 | `tweedie` | daily direct, Tweedie |
 | `two_stage` | binary occurrence × gamma positive-quantity |
+| `two_stage_quantile` | binary occurrence × pinball-loss quantity at P10/P50/P90 (predictive intervals, not the shipped point forecast) |
 | `weekly_total` | Tweedie on 7-day sums + weekday allocation |
 
 Each variant owns an independent config dataclass so tuning one cannot leak into another —
@@ -126,9 +127,9 @@ paths by hand. `DATE_COLUMNS` drives date restoration on read.
 
 ## Development workflow
 
-Analysis lives in numbered notebooks (`00_data_cleaning` → `05_machine_learning`) and prose
+Analysis lives in numbered notebooks (`00_data_cleaning` → `09_decision_layer`) and prose
 findings in `reports/*.md`. The dominant loop for model work is a **feature batch**, visible in
-`notebooks/05_machine_learning/05_06`–`05_09`:
+`notebooks/05_machine_learning/05_06`–`05_08`:
 
 1. State the mechanism and the expected effect before running anything.
 2. Add features to `builder.py` with descriptions and unit tests.

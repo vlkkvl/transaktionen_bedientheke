@@ -1,5 +1,5 @@
 {
-  "DATA_DIR": "data/processed/transactions",
+  "DATA_DIR": "data/processed/transactions_fixed",
   "MIN_ACTIVE_DAYS": 28,
   "FIRST_ORIGIN": "2026-03-02",
   "ORIGIN_SPACING_DAYS": 7,
