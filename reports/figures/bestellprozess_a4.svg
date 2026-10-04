@@ -1,0 +1,220 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 794 1123" role="img" aria-labelledby="title description">
+
+  <defs>
+    <filter id="shadow" x="-12%" y="-12%" width="124%" height="136%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+
+    <marker id="arrow-blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0.5 L8,4.5 L0,8.5 Z" fill="#2a78d6"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0.5 L8,4.5 L0,8.5 Z" fill="#1b8f69"/>
+    </marker>
+
+    <symbol id="ic-target" viewBox="0 0 48 48">
+      <circle cx="24" cy="24" r="18"/>
+      <circle cx="24" cy="24" r="10"/>
+      <circle cx="24" cy="24" r="3"/>
+      <path d="M35,13 L43,5 M35,5 H43 V13"/>
+    </symbol>
+    <symbol id="ic-order" viewBox="0 0 48 48">
+      <rect x="8" y="6" width="27" height="36" rx="3"/>
+      <path d="M15,16 H28 M15,23 H28 M15,30 H23"/>
+      <circle cx="36" cy="34" r="8" fill="#ffffff"/>
+      <path d="M32,34 H40 M36,30 V38"/>
+    </symbol>
+    <symbol id="ic-dial" viewBox="0 0 48 48">
+      <path d="M8,37 A18,18 0 1,1 40,37"/>
+      <path d="M24,34 L34,18"/>
+      <circle cx="24" cy="34" r="3"/>
+      <path d="M10,31 L14,29 M15,20 L18,24 M24,16 V21 M33,20 L30,24 M38,31 L34,29"/>
+    </symbol>
+    <symbol id="ic-distribution" viewBox="0 0 48 48">
+      <path d="M5,39 H44"/>
+      <path d="M7,39 C13,39 15,30 18,23 C21,15 25,10 30,14 C35,18 35,34 42,39"/>
+      <path d="M30,14 V39" stroke-dasharray="3 3"/>
+    </symbol>
+    <symbol id="ic-checkstock" viewBox="0 0 48 48">
+      <path d="M24,5 L43,24 L24,43 L5,24 Z"/>
+      <path d="M15,24 L21,30 L34,17"/>
+    </symbol>
+    <symbol id="ic-sale" viewBox="0 0 48 48">
+      <path d="M13,18 H36 V42 H13 Z"/>
+      <path d="M19,18 C19,10 30,10 30,18"/>
+      <path d="M19,29 L23,33 L31,24"/>
+    </symbol>
+    <symbol id="ic-bin" viewBox="0 0 48 48">
+      <path d="M11,15 H37 M17,15 V10 H31 V15 M14,15 L17,42 H31 L34,15"/>
+      <path d="M21,22 V36 M27,22 V36"/>
+    </symbol>
+    <symbol id="ic-empty" viewBox="0 0 48 48">
+      <path d="M7,19 L14,10 H40 V19 Z"/>
+      <rect x="7" y="19" width="33" height="17" rx="2" stroke-dasharray="4 3"/>
+      <path d="M4,42 H44 M14,28 H33" stroke-dasharray="4 3"/>
+    </symbol>
+
+    <style>
+      :root { color-scheme: light; }
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+      .h1 { font-size: 27px; font-weight: 760; fill: #172033; letter-spacing: -0.4px; }
+      .subtitle { font-size: 12px; fill: #526078; }
+      .stage-title { font-size: 20px; font-weight: 760; fill: #172033; }
+      .card-title { font-size: 14px; font-weight: 740; fill: #172033; }
+      .body { font-size: 11px; fill: #526078; }
+      .tiny { font-size: 9px; fill: #667085; }
+      .formula { font: 600 10.5px "SF Mono", ui-monospace, Menlo, Consolas, monospace; fill: #172033; }
+      .badge-text { font-size: 16px; font-weight: 800; fill: #ffffff; text-anchor: middle; }
+      .goal-blue { font-size: 10px; font-weight: 720; fill: #1f65b8; }
+      .goal-green { font-size: 10px; font-weight: 720; fill: #147555; }
+      .cycle-label { font-size: 10px; font-weight: 720; fill: #526078; }
+      .center { text-anchor: middle; }
+      .right { text-anchor: end; }
+      .stage-blue { fill: #f4f8fd; stroke: #b8d6f6; stroke-width: 1.5; }
+      .stage-green { fill: #f2faf7; stroke: #b8e4d4; stroke-width: 1.5; }
+      .surface { fill: #ffffff; stroke: #d4dbe6; stroke-width: 1.25; }
+      .highlight { fill: #2a78d6; }
+      .highlight-text { font-size: 13px; font-weight: 760; fill: #ffffff; }
+      .badge-blue { fill: #2a78d6; }
+      .badge-green { fill: #1b8f69; }
+      .pill-blue { fill: #e4f0fd; stroke: #b8d6f6; stroke-width: 1; }
+      .pill-green { fill: #e2f5ed; stroke: #b8e4d4; stroke-width: 1; }
+      .ico { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+      .blue { color: #2a78d6; }
+      .green { color: #1b8f69; }
+      .orange { color: #eb6834; }
+      .cycle-blue { fill: none; stroke: #2a78d6; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-blue); }
+      .cycle-green { fill: none; stroke: #1b8f69; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-green); }
+      .flow-blue { fill: none; stroke: #2a78d6; stroke-width: 1.6; marker-end: url(#arrow-blue); }
+      .flow-green { fill: none; stroke: #1b8f69; stroke-width: 1.6; stroke-linejoin: miter; marker-end: url(#arrow-green); }
+      .hair { stroke: #d4dbe6; stroke-width: 1; }
+      .step { cursor: default; outline: none; }
+      .step .surface { transition: stroke-width 120ms ease, filter 120ms ease; }
+      .step:hover .surface, .step:focus .surface { stroke-width: 2.2; filter: url(#shadow); }
+    </style>
+  </defs>
+
+  <rect width="794" height="1123" fill="#ffffff"/>
+
+  <!-- Kreislauf: Bestellung zu Produktion -->
+  <path d="M704,338 H728 Q750,338 750,360 V706 Q750,728 728,728 H704" class="cycle-green"/>
+  <rect x="690" y="520" width="121" height="28" rx="14" fill="#ffffff" transform="rotate(90 750 534)"/>
+  <text x="750" y="538" class="cycle-label center" transform="rotate(90 750 538)">Rohware verfügbar</text>
+
+  <!-- Kreislauf: Produktion zu Bestellung -->
+  <path d="M90,754 H66 Q44,754 44,732 V362 Q44,340 66,340 H90" class="cycle-blue"/>
+  <rect x="-21" y="520" width="130" height="28" rx="14" fill="#ffffff" transform="rotate(-90 44 534)"/>
+  <text x="44" y="538" class="cycle-label center" transform="rotate(-90 44 538)">Bestand aktualisieren</text>
+
+  <!-- ================= BLOCK 1 ================= -->
+  <g id="block-order" transform="translate(0 38)">
+  <rect x="90" y="142" width="614" height="330" rx="22" class="stage-blue"/>
+
+  <circle cx="124" cy="184" r="20" class="badge-blue"/>
+  <text x="124" y="190" class="badge-text">1</text>
+  <text x="160" y="191" class="stage-title">Bestellentscheidung</text>
+
+  <rect x="469" y="164" width="205" height="38" rx="19" class="pill-blue"/>
+  <text x="571.5" y="187" class="goal-blue center">Ziel: Lieferfähigkeit sichern</text>
+
+  <!-- 1A Zielbestand -->
+  <g class="step" tabindex="0">
+    <title>Der Zielbestand deckt den erwarteten Rohwarenbedarf bis zur nächsten Lieferung mit zusätzlichem Sicherheitspuffer ab.</title>
+    <rect x="126" y="229" width="240" height="145" rx="14" class="surface"/>
+    <svg x="222" y="247" width="48" height="48" class="ico blue"><use href="#ic-target"/></svg>
+    <text x="246" y="316" class="card-title center">Zielbestand setzen</text>
+    <text x="246" y="340" class="body center">Bedarf bis zur nächsten Lieferung</text>
+    <text x="246" y="358" class="body center">mit Sicherheitspuffer abdecken</text>
+  </g>
+
+  <path d="M366,301 H418" class="flow-blue"/>
+
+  <!-- 1B Bestellmenge -->
+  <g class="step" tabindex="0">
+    <title>Die Bestellmenge entsteht durch den Abgleich des Zielbestands mit vorhandenem und bereits bestelltem Rohwarenbestand.</title>
+    <rect x="428" y="229" width="240" height="145" rx="14" class="surface"/>
+    <svg x="524" y="247" width="48" height="48" class="ico blue"><use href="#ic-order"/></svg>
+    <text x="548" y="316" class="card-title center">Bestellmenge berechnen</text>
+    <text x="548" y="340" class="body center">Zielbestand mit Bestand und</text>
+    <text x="548" y="358" class="body center">bereits bestellter Ware abgleichen</text>
+  </g>
+
+  <!-- Hervorgehobene Leitlinie -->
+  <rect x="126" y="397" width="542" height="48" rx="14" class="highlight"/>
+  <text x="397" y="426" class="highlight-text center">Leitlinie: Rohware großzügig absichern</text>
+  </g>
+
+  <!-- ================= BLOCK 2 ================= -->
+  <g id="block-production" transform="translate(0 -84)">
+  <rect x="90" y="624" width="614" height="376" rx="22" class="stage-green"/>
+
+  <circle cx="124" cy="666" r="20" class="badge-green"/>
+  <text x="124" y="672" class="badge-text">2</text>
+  <text x="160" y="673" class="stage-title">Produktionsentscheidung</text>
+
+  <rect x="469" y="646" width="205" height="38" rx="19" class="pill-green"/>
+  <text x="571.5" y="669" class="goal-green center">Ziel: Kostenabwägung treffen</text>
+
+  <!-- 2A Quantil -->
+  <g class="step" tabindex="0">
+    <title>Das optimale Produktionsquantil entspricht dem Anteil der entgangenen Marge an den gesamten Fehlentscheidungskosten.</title>
+    <rect x="116" y="711" width="160" height="132" rx="14" class="surface"/>
+    <svg x="172" y="725" width="48" height="48" class="ico green"><use href="#ic-dial"/></svg>
+    <text x="196" y="790" class="card-title center">2A · Quantil wählen</text>
+    <text x="196" y="818" class="formula center">τ* = c<tspan baseline-shift="sub" font-size="8">u</tspan> / (c<tspan baseline-shift="sub" font-size="8">u</tspan> + c<tspan baseline-shift="sub" font-size="8">o</tspan>)</text>
+  </g>
+
+  <path d="M276,777 H307" class="flow-green"/>
+
+  <!-- 2B Menge -->
+  <g class="step" tabindex="0">
+    <title>Die tägliche Produktionsmenge wird je Artikel aus der Prognoseverteilung am kostenbasierten Quantil abgelesen.</title>
+    <rect x="317" y="711" width="160" height="132" rx="14" class="surface"/>
+    <svg x="373" y="725" width="48" height="48" class="ico green"><use href="#ic-distribution"/></svg>
+    <text x="397" y="790" class="card-title center">2B · Menge ablesen</text>
+    <text x="397" y="818" class="formula center">P<tspan baseline-shift="sub" font-size="8">Artikel, Tag</tspan> = Q(τ*)</text>
+  </g>
+
+  <path d="M477,777 H508" class="flow-green"/>
+
+  <!-- 2C Bestand -->
+  <g class="step" tabindex="0">
+    <title>Die geplante Produktionsmenge wird gegen den vorhandenen Rohwarenbestand geprüft.</title>
+    <rect x="518" y="711" width="160" height="132" rx="14" class="surface"/>
+    <svg x="574" y="725" width="48" height="48" class="ico green"><use href="#ic-checkstock"/></svg>
+    <text x="598" y="790" class="card-title center">2C · Bestand prüfen</text>
+    <text x="598" y="814" class="body center">Rohware ausreichend?</text>
+  </g>
+
+  <!-- 2C zu Verkauf -->
+  <path d="M598,843 V857 H397 V872" class="flow-green"/>
+
+  <!-- Verkauf -->
+  <g class="step" tabindex="0">
+    <title>Die verfügbare Produktionsmenge wird mit dem beobachteten Abverkauf abgeglichen.</title>
+    <rect x="317" y="872" width="160" height="44" rx="12" class="surface"/>
+    <svg x="345" y="882" width="24" height="24" class="ico green"><use href="#ic-sale"/></svg>
+    <text x="415" y="899" class="card-title center">Verkauf</text>
+  </g>
+
+  <!-- Verkauf zu Abschrift und Fehlmenge -->
+  <path d="M385,916 V928 H236 V940" class="flow-green"/>
+  <path d="M409,916 V928 H558 V940" class="flow-green"/>
+
+  <!-- Abschrift -->
+  <g class="step" tabindex="0">
+    <title>Nicht verkaufte produzierte Ware wird als Abschrift ausgewiesen.</title>
+    <rect x="156" y="940" width="160" height="44" rx="12" class="surface"/>
+    <svg x="176" y="950" width="24" height="24" class="ico orange"><use href="#ic-bin"/></svg>
+    <text x="250" y="967" class="card-title center">Abschrift</text>
+  </g>
+
+  <!-- Fehlmenge -->
+  <g class="step" tabindex="0">
+    <title>Übersteigt der beobachtete Abverkauf die produzierte Menge, wird die positive Differenz als Fehlmenge ausgewiesen.</title>
+    <rect x="478" y="940" width="160" height="44" rx="12" class="surface"/>
+    <svg x="498" y="950" width="24" height="24" class="ico orange"><use href="#ic-empty"/></svg>
+    <text x="574" y="967" class="card-title center">Fehlmenge</text>
+  </g>
+  </g>
+</svg>
