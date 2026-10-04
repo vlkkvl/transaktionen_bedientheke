@@ -71,6 +71,7 @@ notebook==7.6.0
 notebook_shim==0.2.4
 numba==0.65.1
 numpy==2.4.6
+optuna==5.0.0
 packaging==26.2
 pandas==2.3.3
 pandocfilters==1.5.1
