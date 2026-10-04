@@ -246,6 +246,14 @@ def _forecast_rows(
                 ON w.ARTIKEL_ID = p.ARTIKEL_ID
                 AND w.MARKT_ID = p.MARKT_ID
                 AND w.origin > p.period
+        ),
+        with_active_history AS (
+            SELECT q.*, n.last_active_demand, n.recent_active_mean
+            FROM with_positive_quantity AS q
+            ASOF LEFT JOIN benchmark_active_features AS n
+                ON q.ARTIKEL_ID = n.ARTIKEL_ID
+                AND q.MARKT_ID = n.MARKT_ID
+                AND q.origin > n.period
         )
         SELECT
             ARTIKEL_ID,
@@ -263,9 +271,10 @@ def _forecast_rows(
             actual,
             is_active,
             reason_closed,
-            CASE WHEN is_active THEN recent_mean ELSE NULL END AS recent_mean,
+            CASE WHEN is_active THEN last_active_demand ELSE NULL END AS naive,
+            CASE WHEN is_active THEN recent_active_mean ELSE NULL END AS recent_mean,
             CASE
-                WHEN is_active THEN COALESCE(same_weekday_mean, recent_mean)
+                WHEN is_active THEN COALESCE(same_weekday_mean, recent_active_mean)
                 ELSE NULL
             END AS same_weekday_moving_average,
             CASE
@@ -273,7 +282,7 @@ def _forecast_rows(
                     THEN recent_occurrence_rate * COALESCE(positive_quantity_mean, 0)
                 ELSE NULL
             END AS occurrence_x_positive_quantity
-        FROM with_positive_quantity
+        FROM with_active_history
         ORDER BY origin, ARTIKEL_ID, MARKT_ID, period
         """,
         [horizon_days],

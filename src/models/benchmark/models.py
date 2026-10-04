@@ -7,7 +7,8 @@ SAME_WEEKDAY_OCCURRENCES = 4
 POSITIVE_QUANTITY_OBSERVATIONS = 10
 
 MODEL_COLUMNS = {
-    "recent_mean": "Recent mean (28 observations)",
+    "naive": "Naive (last observed active day)",
+    "recent_mean": "Recent mean (28 active observations)",
     "same_weekday_moving_average": (
         "Same-weekday moving average (4 occurrences; recent-mean fallback)"
     ),
@@ -88,6 +89,24 @@ def create_history_features(con: object) -> None:
             PARTITION BY ARTIKEL_ID, MARKT_ID, EXTRACT(DOW FROM period)
             ORDER BY period ROWS BETWEEN {SAME_WEEKDAY_OCCURRENCES - 1}
                 PRECEDING AND CURRENT ROW
+        )
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE benchmark_active_features AS
+        SELECT
+            ARTIKEL_ID,
+            MARKT_ID,
+            period,
+            demand AS last_active_demand,
+            AVG(demand) OVER active_rows AS recent_active_mean
+        FROM benchmark_daily_rows
+        WHERE is_active
+        WINDOW active_rows AS (
+            PARTITION BY ARTIKEL_ID, MARKT_ID
+            ORDER BY period ROWS BETWEEN {RECENT_MEAN_DAYS - 1} PRECEDING
+                AND CURRENT ROW
         )
         """
     )
